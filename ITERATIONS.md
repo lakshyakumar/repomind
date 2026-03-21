@@ -55,6 +55,7 @@ If v1 works, the first real pressure will come from:
 - edit suggestions measurably outperform v1 on medium/large repos
 - large-repo partial indexing is understandable and predictable
 - branch-scoped indexing is useful without becoming operationally annoying
+- per-branch index routing is only added if real v1 usage shows repeated branch-switching pain; it is not added proactively
 - retrieval quality improves without adding hosted dependencies or query-time model calls
 
 ---
@@ -79,7 +80,7 @@ At that point, users will want:
 - framework detectors for common stacks
 - better related-file and blast-radius hints
 - richer provenance about why a file was suggested
-- optional issue/PR overlays only if they remain local and grounded
+- optional issue/PR overlays only as explicit remote-dependent integrations in later iterations
 
 ### Out of scope
 - full AST call-graph perfection across all languages

@@ -1,8 +1,17 @@
 """SQLite storage layer: schema init, connection management, path resolution."""
 
 import os
+import sqlite3
 from hashlib import sha256
 from pathlib import Path
+
+# Bump this when the schema changes. open_db() will drop and recreate all
+# tables when the stored version does not match.
+CURRENT_SCHEMA_VERSION = 1
+
+# ---------------------------------------------------------------------------
+# Storage path helpers (T02)
+# ---------------------------------------------------------------------------
 
 
 def _storage_root() -> Path:
@@ -31,7 +40,6 @@ def repo_hash(repo_root: str) -> str:
     Normalises trailing slashes before hashing so /a/b and /a/b/ produce
     the same key.
     """
-    # Resolve to absolute, then strip trailing slash for stability
     normalized = str(Path(repo_root).resolve()).rstrip("/")
     return sha256(normalized.encode()).hexdigest()
 
@@ -48,3 +56,175 @@ def get_tmp_db_path(repo_root: str) -> Path:
     storage_root = _storage_root()
     _, tmp_dir = _ensure_dirs(storage_root)
     return tmp_dir / f"{repo_hash(repo_root)}.sqlite3.tmp"
+
+
+# ---------------------------------------------------------------------------
+# Schema DDL
+# ---------------------------------------------------------------------------
+
+_DDL_TABLES = """
+CREATE TABLE IF NOT EXISTS repo_index (
+  repo_id       TEXT PRIMARY KEY,
+  repo_root     TEXT NOT NULL,
+  repo_name     TEXT NOT NULL,
+  branch_name   TEXT,
+  head_sha      TEXT,
+  indexed_at    TEXT NOT NULL,
+  is_git_repo   INTEGER NOT NULL,
+  index_version INTEGER NOT NULL,
+  partial_index INTEGER NOT NULL DEFAULT 0,
+  partial_reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS directories (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id                  TEXT NOT NULL,
+  path                     TEXT NOT NULL,
+  depth                    INTEGER NOT NULL,
+  file_count               INTEGER NOT NULL,
+  role                     TEXT,
+  summary                  TEXT,
+  representative_files_json TEXT NOT NULL,
+  importance_score         REAL NOT NULL,
+  UNIQUE(repo_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS files (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id              TEXT NOT NULL,
+  path                 TEXT NOT NULL,
+  directory_path       TEXT NOT NULL,
+  extension            TEXT,
+  size_bytes           INTEGER NOT NULL,
+  line_count           INTEGER,
+  depth                INTEGER NOT NULL,
+  file_type            TEXT NOT NULL,
+  importance_score     REAL NOT NULL,
+  inbound_ref_count    INTEGER NOT NULL DEFAULT 0,
+  path_tokens_json     TEXT NOT NULL,
+  header_tokens_json   TEXT NOT NULL,
+  representative_reason TEXT,
+  last_modified_ts     TEXT,
+  UNIQUE(repo_id, path)
+);
+
+CREATE TABLE IF NOT EXISTS recent_commits (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id             TEXT NOT NULL,
+  commit_sha          TEXT NOT NULL,
+  author_name         TEXT,
+  authored_at         TEXT,
+  subject             TEXT NOT NULL,
+  files_changed_count INTEGER,
+  UNIQUE(repo_id, commit_sha)
+);
+
+CREATE TABLE IF NOT EXISTS commit_files (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id     TEXT NOT NULL,
+  commit_sha  TEXT NOT NULL,
+  path        TEXT NOT NULL,
+  change_type TEXT,
+  UNIQUE(repo_id, commit_sha, path)
+);
+
+CREATE TABLE IF NOT EXISTS index_runs (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id             TEXT NOT NULL,
+  started_at          TEXT NOT NULL,
+  completed_at        TEXT,
+  status              TEXT NOT NULL,
+  branch_name         TEXT,
+  head_sha            TEXT,
+  files_indexed       INTEGER,
+  directories_indexed INTEGER,
+  partial_index       INTEGER NOT NULL DEFAULT 0,
+  error_message       TEXT
+);
+"""
+
+_DDL_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_directories_repo_score
+  ON directories(repo_id, importance_score DESC);
+CREATE INDEX IF NOT EXISTS idx_files_repo_score
+  ON files(repo_id, importance_score DESC);
+CREATE INDEX IF NOT EXISTS idx_files_repo_type
+  ON files(repo_id, file_type);
+CREATE INDEX IF NOT EXISTS idx_files_repo_directory
+  ON files(repo_id, directory_path);
+CREATE INDEX IF NOT EXISTS idx_commits_repo_time
+  ON recent_commits(repo_id, authored_at DESC);
+CREATE INDEX IF NOT EXISTS idx_commit_files_repo_path
+  ON commit_files(repo_id, path);
+"""
+
+# Ordered for safe DROP (children before parents, though SQLite doesn't
+# enforce FK by default; kept explicit for clarity).
+_TABLE_NAMES = [
+    "index_runs",
+    "commit_files",
+    "recent_commits",
+    "files",
+    "directories",
+    "repo_index",
+]
+
+# ---------------------------------------------------------------------------
+# Internal schema helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_schema_version(conn: sqlite3.Connection) -> int:
+    """Read PRAGMA user_version (0 = fresh / uninitialised)."""
+    return conn.execute("PRAGMA user_version").fetchone()[0]
+
+
+def _set_schema_version(conn: sqlite3.Connection, version: int) -> None:
+    # PRAGMA does not support bound parameters; version is always an int literal.
+    conn.execute(f"PRAGMA user_version = {version}")
+
+
+def _drop_all_tables(conn: sqlite3.Connection) -> None:
+    for name in _TABLE_NAMES:
+        conn.execute(f"DROP TABLE IF EXISTS {name}")
+
+
+def _create_schema(conn: sqlite3.Connection) -> None:
+    conn.executescript(_DDL_TABLES)
+    conn.executescript(_DDL_INDEXES)
+    _set_schema_version(conn, CURRENT_SCHEMA_VERSION)
+
+
+# ---------------------------------------------------------------------------
+# Public connection factory
+# ---------------------------------------------------------------------------
+
+
+def open_db(repo_root: str) -> sqlite3.Connection:
+    """Open (and initialise if needed) the SQLite index for *repo_root*.
+
+    Behaviour:
+    - Fresh DB (user_version == 0): schema is created.
+    - Version matches CURRENT_SCHEMA_VERSION: returned as-is.
+    - Version mismatch: all tables are dropped, schema recreated.
+      Callers must trigger a full re-index after a version mismatch.
+
+    Returns a connection with WAL journal mode and row_factory = sqlite3.Row.
+    """
+    db_path = get_db_path(repo_root)
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    existing_version = _get_schema_version(conn)
+
+    if existing_version == 0:
+        _create_schema(conn)
+    elif existing_version != CURRENT_SCHEMA_VERSION:
+        _drop_all_tables(conn)
+        _create_schema(conn)
+    # Version matches — schema is current; nothing to do.
+
+    conn.commit()
+    return conn

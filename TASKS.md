@@ -6,6 +6,15 @@ The goal is to keep work small, reviewable, and testable.
 
 ---
 
+## Execution Model
+
+- T01 through T08 build the data layer and indexing pipeline.
+- T09 through T15 implement testable Python query functions and refresh/query logic in modules like `queries.py`, `refresh.py`, and related helpers.
+- T16 wires those functions into the MCP server and registers the actual tool surface.
+- Tests for T09 through T15 should primarily run against Python functions directly, not through the MCP protocol.
+
+---
+
 ## Workflow Rules
 
 - Claude can pick one task at a time.
@@ -28,7 +37,6 @@ Everything else depends on a sane project layout, packaging config, and test har
 - add base module layout from architecture doc
 - add `.gitignore` updates if needed
 - add test runner setup
-- add minimal Dockerfile and local run instructions stub
 
 **Dependencies**
 - none
@@ -37,7 +45,6 @@ Everything else depends on a sane project layout, packaging config, and test har
 - project installs locally
 - tests can run through a single command
 - package layout matches architecture doc
-- Dockerfile builds successfully
 
 **PR-sized**
 - yes
@@ -178,7 +185,7 @@ Repo overview, directory map, and critical files all depend on stable ranking.
 **Scope**
 - implement file importance scoring from architecture doc
 - implement directory importance scoring
-- implement inbound reference counting if included in schema
+- implement inbound reference counting using the schema field defined in the architecture doc
 - persist computed scores during indexing
 
 **Dependencies**
@@ -238,7 +245,7 @@ This is the first tool agents should call and the trust anchor for freshness.
 - missing index returns refresh recommendation
 - current index returns `get_repo_overview` recommendation
 - stale index returns `refresh_index` recommendation
-- tests cover all three states
+- tests cover all three states through direct Python query-function tests
 
 **PR-sized**
 - yes
@@ -259,8 +266,8 @@ Without this tool the service cannot move from stale docs to actual indexable st
 - T08, T09
 
 **Acceptance criteria**
-- tool triggers a full refresh successfully
-- tool returns expected response contract
+- refresh logic triggers a full refresh successfully
+- refresh result matches the architecture contract at the Python-function level
 - tests cover success and failure paths
 
 **PR-sized**
@@ -283,7 +290,7 @@ This is the main orientation tool after index status.
 - T08, T09
 
 **Acceptance criteria**
-- output matches architecture contract
+- output matches architecture contract at the query-function level
 - ordering is driven by stored importance scores
 - stale provenance is included when applicable
 
@@ -307,7 +314,7 @@ Agents need navigable directory-level structure, not just top files.
 
 **Acceptance criteria**
 - important directories are ranked and returned correctly
-- response contract matches architecture doc
+- response contract matches architecture doc at the query-function level
 - tests cover representative fixture repo outputs
 
 **PR-sized**
@@ -330,7 +337,7 @@ Agents need a direct ranked file list before task-specific routing exists.
 
 **Acceptance criteria**
 - manifests/entrypoints/configs rank near top where expected
-- output shape matches architecture doc
+- output shape matches architecture doc at the query-function level
 - tests verify ranking sanity on fixtures
 
 **PR-sized**
@@ -354,7 +361,7 @@ Branch-aware repo context is incomplete without recent committed change visibili
 **Acceptance criteria**
 - Git repos return recent commits and changed files
 - non-Git repos return a clear degraded response
-- tests cover both cases
+- tests cover both cases through direct query-function tests
 
 **PR-sized**
 - yes
@@ -379,7 +386,7 @@ This is the most product-critical v1 tool.
 **Acceptance criteria**
 - scoring follows documented formula
 - output includes `path`, `file_type`, `score`, `reason`, and `confidence`
-- tests cover at least several realistic task queries against fixtures
+- tests cover at least several realistic task queries against fixtures through direct Python query-function tests
 
 **PR-sized**
 - yes
@@ -458,26 +465,11 @@ The repo should be runnable and reviewable by other agents and humans.
 
 ---
 
-## Recommended first execution order
+## Parallelism note
 
-1. T01
-2. T02
-3. T03
-4. T04
-5. T05
-6. T06
-7. T07
-8. T08
-9. T09
-10. T10
-11. T11
-12. T12
-13. T13
-14. T14
-15. T15
-16. T16
-17. T17
-18. T18
+- T03 and T04 can start in parallel after T02.
+- T12, T13, and T14 can start in parallel after T08.
+- T16 should start only after the underlying query functions are stable enough to wire cleanly into MCP.
 
 ---
 

@@ -103,16 +103,51 @@ MCP is the right fit because it lets a repository expose structured tools instea
 
 Repomind is not trying to replace source-of-truth code reading. It is trying to make code reading targeted.
 
-## Initial MVP
+## Current MVP
 
-A sensible first version should focus on:
+The first working version now includes:
 
-- repo summary
+- repo overview
 - directory purpose map
 - critical files index
-- module summaries
-- function flow extraction for key paths
-- change-aware refresh for incremental updates
+- recent git changes
+- likely edit-point suggestions for a task
+- cached local index refresh
+
+## Installation
+
+```bash
+npm install
+npm run build
+```
+
+## Run the MCP server
+
+```bash
+npm run dev
+```
+
+or with compiled output:
+
+```bash
+npm run build
+npm start
+```
+
+## Available tools
+
+- `repo.get_overview`
+- `repo.get_directory_map`
+- `repo.get_critical_files`
+- `repo.get_recent_changes`
+- `repo.find_edit_points`
+- `repo.refresh_index`
+
+## How it works
+
+Repomind walks the repository, skips noisy folders like `.git` and `node_modules`, extracts lightweight summaries from readable files, scores important files, captures recent git history, and caches the result in `.repomind/index.json`.
+
+That gives coding agents a reusable structural map before they start opening source files one by one.
 
 ## Design principles
 

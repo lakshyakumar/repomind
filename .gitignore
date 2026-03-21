@@ -1,0 +1,4 @@
+node_modules/
+dist/
+.repomind/
+.DS_Store

@@ -214,7 +214,7 @@ Repomind v1 must expose the following MCP tools:
 
 ### In scope
 - local MCP server
-- Docker-first deployment support
+- Docker-supported deployment
 - local repository walking and indexing
 - branch and commit metadata capture
 - directory summaries
@@ -260,7 +260,6 @@ Repomind v1 must expose the following MCP tools:
 
 ## 16. Open Questions
 
-- should stale indexes only warn by default or auto-refresh by default?
 - how should non-Git directories degrade in the MCP responses?
 - when should per-branch stored indexes become worth the added complexity?
 - what later analyzers provide the biggest value after the heuristic MVP is proven?

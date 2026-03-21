@@ -2,7 +2,7 @@
 
 ## 1. Overview
 
-Repomind is a Docker-first MCP repo query engine for coding agents.
+Repomind is a local MCP server and repo query engine for coding agents.
 
 It indexes the currently checked-out state of a Git repository, records branch and commit metadata at index time, and serves structured, grounded repo queries on demand. Its job is not to replace source code reading. Its job is to make source code reading faster, more targeted, and more reliable.
 
@@ -125,9 +125,7 @@ Repomind outputs must:
 ### 9.4 Staleness and refresh
 On each query, Repomind must check the current branch and HEAD commit.
 
-If the current snapshot differs from the indexed snapshot, Repomind must mark the index stale and either:
-- return stale status and allow explicit refresh, or
-- auto-refresh if configured
+If the current snapshot differs from the indexed snapshot, Repomind must mark the index stale, return the stale status in the response, and allow explicit refresh via `refresh_index`. Auto-refresh is out of v1 scope.
 
 ### 9.5 Local and free operation
 Repomind must run locally, require no hosted backend, and make no LLM calls at query time.
@@ -165,7 +163,9 @@ Repomind must accept a task description and return likely files or directories t
 
 In v1 this must be heuristic and grounded. It must not rely on embeddings or query-time LLM reasoning.
 
-### FR6. Branch status
+At minimum, v1 heuristics must score candidates using tokenized file path match, directory name match, file type classification, and extracted header comment tokens where available. The score should combine relevance and file importance. The tool should return the top ranked results with a reason field for each result. Confidence should be conservative in v1.
+
+### FR6. Index status
 Repomind must return:
 - indexed branch name
 - indexed commit SHA
@@ -184,14 +184,14 @@ Repomind v1 must expose the following MCP tools:
 - `get_directory_map`
 - `get_critical_files`
 - `get_recent_changes`
-- `get_branch_status`
+- `get_index_status`
 - `get_edit_suggestions`
 - `refresh_index`
 
 ## 12. Non-Functional Requirements
 
 ### Performance
-- first index build should be reasonable for local development repositories
+- first index build must complete in under 30 seconds for repositories up to 10,000 files. Repositories over 50,000 files must receive a partial index capped at depth 3, with a `partial: true` flag in the response
 - repeated queries should be much faster than full rescans
 - checking branch and HEAD on each query should remain lightweight
 
@@ -207,7 +207,7 @@ Repomind v1 must expose the following MCP tools:
 
 ### Portability
 - must run locally through MCP
-- must be Docker-supported as a first-class deployment path
+- must support Docker as a deployment path; native local install is the primary path
 - must require no paid infrastructure in v1
 
 ## 13. MVP Scope
@@ -261,7 +261,6 @@ Repomind v1 must expose the following MCP tools:
 ## 16. Open Questions
 
 - should stale indexes only warn by default or auto-refresh by default?
-- what exact heuristic signals should power `get_edit_suggestions` in v1?
 - how should non-Git directories degrade in the MCP responses?
 - when should per-branch stored indexes become worth the added complexity?
 - what later analyzers provide the biggest value after the heuristic MVP is proven?
@@ -275,6 +274,6 @@ Repomind is not:
 - a replacement for reading source code
 
 Repomind is:
-- a Docker-first repo query engine for coding agents
+- a locally deployable repo query engine for coding agents, with Docker support
 - a local MCP server that serves structured, grounded repo queries on demand
 - a reusable indexed context layer for repeated work on the same repository

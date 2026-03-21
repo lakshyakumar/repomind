@@ -2,276 +2,274 @@
 
 ## 1. Problem
 
-Coding agents repeatedly spend tokens and time re-understanding the same repository.
+Coding agents repeatedly re-discover the same repository structure, important files, and recent committed changes every time they start work.
 
 Before they can make a useful change, they often need to:
 - inspect the directory tree
-- search for entrypoints
-- read config files and manifests
-- infer architecture from scattered modules
-- retrace common flows
-- guess where a task should be implemented
+- find manifests, configs, and entrypoints
+- infer architecture from scattered files
+- re-check recent commits to understand what changed
+- guess which files matter for the task
 
-This creates a persistent context tax:
-- **higher token usage**
-- **slower task startup**
-- **inconsistent understanding across sessions**
-- **more wandering before the first correct edit**
+This creates a context tax:
+- repeated token usage
+- slower time to first useful edit
+- inconsistent repo understanding across sessions
+- too many wrong-file detours before the first correct edit
 
 ## 2. Customer Segments
 
 ### Early adopters
-- developers using coding agents repeatedly on the same repo
+- developers using Claude Code, Cursor, Codex, or similar coding agents repeatedly on the same Git repository
 - teams building internal AI coding workflows
-- agent platform builders who want reusable codebase context
-- maintainers working in medium or large repos where repeated context loading is expensive
+- agent platform builders who want reusable structured repo context
+- maintainers working in medium and large repositories where repeated context loading is expensive
 
 ### Beachhead user
-A developer using Claude Code, Cursor, or similar agents on a real production repo who is tired of watching the agent rediscover the same architecture every time.
+A developer using a coding agent on a real Git repository who is tired of the agent rediscovering the same codebase every session.
 
 ## 3. Existing Alternatives
 
-This section should be grounded in real alternatives, not startup fog.
-
 ### A. Let the coding agent inspect the repo every time
-**Examples:** Claude Code, Cursor, Cline, Aider-style workflows without a persistent repo intelligence layer.
-
-**How it works:**
-The agent uses search, file reads, grep, and shell commands each session to reconstruct context.
+**Examples:** Claude Code, Cursor, Cline, Aider-style workflows without persistent repo indexing.
 
 **Why people use it:**
 - zero setup
 - works today
-- no extra infrastructure
+- no extra tooling
 
 **Limitations:**
 - repeated token burn
 - repeated latency
-- architecture gets re-inferred every session
-- quality depends on what the agent decides to inspect first
+- inconsistent understanding depending on what the agent inspects first
+- weak reuse across sessions
 
 ### B. Hand-written repo docs and architecture notes
-**Examples:** `README.md`, `docs/architecture.md`, onboarding docs, internal wiki pages.
-
-**How it works:**
-Humans document the codebase and agents rely on those docs as shortcuts.
+**Examples:** `README.md`, onboarding docs, `docs/architecture.md`, internal wiki pages.
 
 **Why people use it:**
 - cheap to start
 - human-readable
-- helpful for onboarding
+- useful for onboarding
 
 **Limitations:**
-- docs drift fast
+- drifts quickly
 - usually incomplete
-- weak for task-specific edit guidance
-- not exposed as structured MCP tools
+- not branch-specific
+- not exposed as structured MCP queries
 
 ### C. Code search and grep-based navigation
 **Examples:** ripgrep, GitHub code search, Sourcegraph, IDE search.
 
-**How it works:**
-Agents or developers query raw code text to find likely files, symbols, and references.
-
 **Why people use it:**
 - powerful and flexible
-- great for exact strings and symbols
+- good for exact strings and symbols
 - already part of normal workflows
 
 **Limitations:**
-- returns raw matches, not repo understanding
-- still requires the agent to synthesize architecture manually
-- not a reusable memory layer by itself
+- returns raw matches, not reusable repo context
+- still forces the agent to synthesize structure manually
+- does not track freshness against repo state by itself
 
-### D. Vector search / embedding retrieval over code
-**Examples:** codebase RAG pipelines, embedding-backed retrieval systems, custom repo indexing stacks.
-
-**How it works:**
-The system embeds code chunks and retrieves similar snippets for a query.
-
-**Why people use it:**
-- helps semantic retrieval
-- useful for large repos
-- can work across sessions
-
-**Limitations:**
-- retrieves snippets, not always structural understanding
-- weak at directory-purpose or workflow mapping unless additional layers exist
-- can become stale and opaque
-
-### E. IDE or language-server indexing
+### D. IDE or language-server indexing
 **Examples:** TypeScript language server, IntelliJ indexing, VS Code workspace intelligence.
 
-**How it works:**
-The IDE understands symbols, references, imports, and diagnostics.
-
 **Why people use it:**
-- deep semantic power
 - strong symbol navigation
-- already available in many editor workflows
+- semantic awareness
+- already present in many editors
 
 **Limitations:**
-- not cleanly packaged as portable MCP repo intelligence
-- often client-specific
-- does not automatically become reusable context for external agents
+- not packaged as portable MCP repo queries
+- often editor-specific
+- does not become reusable context for external coding agents automatically
+
+### E. Embedding or vector retrieval over code
+**Examples:** codebase RAG systems, embedding-backed repo search tools.
+
+**Why people use it:**
+- semantic retrieval can be useful in large repos
+- query experience feels flexible
+
+**Limitations:**
+- adds operational complexity
+- can become opaque and stale
+- overkill for a disciplined local MVP
+- not required for the first version of Repomind
 
 ## 4. Unique Value Proposition
 
-**Repomind gives coding agents a reusable understanding of a repository so they can spend tokens solving problems instead of re-learning the codebase.**
+**Repomind gives coding agents a structured, queryable index of the current checked-out repository state so they can stop re-learning the codebase every session.**
 
 ### One-liner
-**Repository intelligence for coding agents.**
+**A local repo query engine for coding agents.**
 
 ## 5. Solution
 
-Repomind is an MCP server that exposes a structured, reusable model of the repo.
+Repomind is a local MCP server that indexes the current checked-out state of a Git repository and serves structured, grounded repo queries on demand.
 
-Instead of making the agent infer everything from raw file access every session, Repomind provides:
+It records branch and commit metadata at index time, detects when the index has gone stale because HEAD changed, and exposes MCP tools for things like:
 - repository overview
-- directory purpose map
-- critical files index
-- recent change summaries
-- likely edit points for a task
-- later, branch-aware and diff-aware overlays
+- directory map
+- critical files
+- recent committed changes
+- index status
+- edit suggestions for a task
+- explicit refresh
 
-The agent still reads raw files when precision matters, but only after it has a map.
+Repomind reflects committed repository state at last refresh. In-flight working tree edits stay in the coding agent’s own context in v1.
+
+Repomind makes no LLM calls at query time.
 
 ## 6. Key Benefits
 
-- lower token spend
-- faster startup for repeated tasks
+- lower repeated token spend
+- faster startup for repeated tasks on the same repo
 - more consistent repo understanding across sessions
-- better navigation in medium and large repos
-- fewer wrong-file detours before implementation starts
+- grounded visibility into recent committed changes
+- structured MCP queries instead of repeated repo rediscovery
 
 ## 7. Unfair Advantage
 
-Most tools expose code. Very few expose a maintained understanding of the codebase.
+Most tools expose raw code, raw search, or editor-local indexing.
 
-Repomind can build leverage by combining:
-- repository structure indexing
-- grounded summaries
-- critical-file ranking
-- change-aware context
-- later, language-aware semantic analysis
+Repomind aims to combine:
+- local indexing of repo structure
+- branch and commit-aware freshness metadata
+- structured MCP queries
+- deterministic, inspectable outputs
+- no hosted dependency and no query-time model cost
 
-The moat is not raw parsing.
-The moat is useful, refreshable repository understanding exposed through a standard MCP interface.
+The advantage is not magic semantics. The advantage is a reusable local repo index that coding agents can query while they work.
 
 ## 8. Channels
 
 - GitHub
 - MCP ecosystem directories
-- Claude Code, Cursor, and agent-builder communities
-- X, Reddit, Hacker News, Discord devtool communities
-- demos comparing repeated-session cost with and without Repomind
+- Claude Code, Cursor, and coding-agent communities
+- X, Reddit, Hacker News, and Discord devtool communities
+- demos showing repeated-session speedup and fewer wrong-file detours
 
 ## 9. Revenue Streams
 
 ### Open source core
 - local MCP server
 - local repo indexing
-- local cached repo understanding
+- structured repo query tools
+- Docker-supported deployment
 
 ### Possible paid layer later
-- shared team indexes
-- hosted indexing
+- hosted team indexes
+- shared organization-level repo context
 - PR and issue overlays
-- dashboards and analytics
+- analytics and usage insights
 - enterprise controls and audit trails
 
-Not needed now. First prove the workflow pain.
+Not needed for v1. First prove the workflow pain.
 
 ## 10. Cost Structure
 
 ### Build costs
-- repository walker and index pipeline
-- summary extraction and ranking logic
-- MCP tool surface
-- cache format and refresh logic
-- testing across repo shapes and languages
+- repo walker and local index pipeline
+- Git metadata extraction
+- MCP tool surface and contracts
+- storage schema and refresh logic
+- testing across repo sizes and languages
 
 ### Ongoing costs
-- keeping outputs grounded and trusted
-- language and framework support
-- scale issues for large repos and monorepos
-- compatibility across MCP clients
+- keeping outputs grounded and trustworthy
+- handling large repositories and monorepos
+- maintenance of heuristics for edit suggestions
+- compatibility across MCP clients and local environments
 
 ## 11. Key Metrics
 
-- average tokens saved per repeated task
-- average time-to-useful-context
-- number of file reads avoided before first correct edit
-- usefulness rating for overview and edit-point tools
-- repeated-session speed improvement on the same repo
+- average reduction in files opened before first correct edit
+- average reduction in time to first useful edit
+- repeated-session speed improvement on the same repository
+- usefulness rating of repo overview and edit suggestions
+- stale-index detection accuracy
 
 ## 12. Early Adopter Signal
 
 Strong signal sounds like:
 - "My agent stops re-reading the same repo every time."
-- "I can point an agent at a big codebase without paying the full context tax."
-- "It knows where to start before it starts poking random files."
+- "I can ask for repo context instead of rebuilding it with grep."
+- "It tells me when the index is stale instead of lying about current state."
+- "It gets me to the right files faster."
 
 ## 13. High-Level MVP
 
 ### Must-have
-- repo overview
-- directory purpose map
-- critical files index
-- recent changes
-- likely edit points
-- refreshable local cache
+- local MCP server
+- current-repo indexing
+- branch and commit metadata capture
+- repository overview
+- directory map
+- critical files
+- recent committed changes
+- index status / staleness detection
+- heuristic edit suggestions
+- explicit refresh via MCP
 
 ### Later
+- stored per-branch indexes
+- embeddings or vector retrieval
 - AST-aware symbol graph
 - framework detection
-- branch and diff overlays
-- confidence and provenance metadata
-- incremental invalidation
+- working tree intelligence
+- branch overlays and diff intelligence
+- confidence scoring beyond heuristic low-confidence defaults
 
 ## 14. Riskiest Assumptions
 
-1. Developers will trust a summarized repo layer enough to use it as first-pass context.
-2. The summaries can stay fresh enough to remain useful.
-3. The token and latency savings are meaningful enough to change behavior.
-4. Structured repo understanding is more useful than plain search for common coding tasks.
-5. MCP is the right portability layer for this product category.
+1. Developers will configure and actually use a repo query MCP server during coding workflows.
+2. Structured repo queries are more useful than repeated raw repo exploration for common agent tasks.
+3. Heuristic edit suggestions are useful enough without embeddings in v1.
+4. Stale detection plus explicit refresh is enough for trust in the first version.
+5. Docker-supported local deployment remains simple enough for early adopters.
 
 ## 15. Experiments
 
 ### Experiment 1
 Compare two workflows on the same repo:
 - normal agent search and file reads only
-- agent uses Repomind before reading code
+- agent uses Repomind queries before reading code
 
 Measure:
-- token usage
+- files opened before first useful progress
 - time to first correct edit
-- files opened before useful progress
+- token usage
 
 ### Experiment 2
-Run repeated sessions on the same repo and track speedup from cached context.
+Run repeated sessions on the same repo and measure the speedup from an existing local index.
 
 ### Experiment 3
-Test across three repo types:
+Test on three repo shapes:
 - small service
 - medium app repo
 - monorepo
 
-Find where the MVP breaks instead of pretending one heuristic fits all.
+Measure where index quality, performance, and edit suggestions break down.
 
 ## 16. Why Now
 
 - coding agents are moving from novelty to repeated real repo work
-- MCP gives a standard tool interface for external intelligence layers
-- teams are starting to notice context cost, not just model quality
-- large context windows still waste money if the agent keeps relearning stable architecture
+- MCP provides a portable interface for local external tooling
+- teams are noticing context cost, not just model quality
+- local-first dev tools are more credible when they avoid hosted dependencies and query-time model fees
 
 ## 17. Positioning
 
 Repomind should be positioned as:
 
-**repository intelligence infrastructure for coding agents**
+**a local repo query engine for coding agents**
 
-Token savings is the hook.
-The actual value is faster, cheaper, more reliable codebase understanding.
+Not:
+- a generic code search tool
+- a hosted code intelligence platform
+- a natural-language answer bot
+- a replacement for reading source code
+
+The hook is faster repeated work on the same repository.
+The actual value is structured, grounded repo context that agents can query on demand.

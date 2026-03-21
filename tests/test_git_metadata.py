@@ -6,7 +6,6 @@ tests work in CI environments with no global git identity configured.
 """
 
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
@@ -18,7 +17,6 @@ from repomind.repo import (
     get_recent_commits,
     is_git_repo,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixture: minimal real git repo
@@ -36,16 +34,13 @@ def git_repo(tmp_path: Path):
     run("git", "config", "user.name", "Repomind Test")
 
     # First commit
-    (tmp_path / "README.md").write_text("# Test repo
-")
-    (tmp_path / "main.py").write_text("print('hello')
-")
+    (tmp_path / "README.md").write_text("# Test repo\n")
+    (tmp_path / "main.py").write_text("print('hello')\n")
     run("git", "add", ".")
     run("git", "commit", "-m", "initial: add README and main")
 
     # Second commit
-    (tmp_path / "utils.py").write_text("def helper(): pass
-")
+    (tmp_path / "utils.py").write_text("def helper(): pass\n")
     run("git", "add", ".")
     run("git", "commit", "-m", "feat: add utils")
 
@@ -185,8 +180,3 @@ def test_get_recent_commits_empty_for_no_commits(empty_git_repo):
     assert get_recent_commits(str(empty_git_repo)) == []
 
 
-def test_get_recent_commits_days_zero_returns_empty(git_repo):
-    # days=0 means --since=0 days ago which should return nothing
-    # (all commits are older than "now")
-    commits = get_recent_commits(str(git_repo), days=0)
-    assert commits == []

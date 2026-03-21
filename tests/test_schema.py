@@ -2,8 +2,6 @@
 
 import sqlite3
 
-import pytest
-
 from repomind.db import (
     CURRENT_SCHEMA_VERSION,
     _get_schema_version,

@@ -1,9 +1,6 @@
 """Tests for db path resolution and storage directory management."""
 
-import os
-from pathlib import Path
 
-import pytest
 
 from repomind.db import get_db_path, get_tmp_db_path, repo_hash
 

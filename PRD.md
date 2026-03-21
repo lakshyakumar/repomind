@@ -2,247 +2,279 @@
 
 ## 1. Overview
 
-Repomind is an MCP server that gives coding agents a reusable understanding of a repository so they do not have to repeatedly scan, grep, and re-learn the same codebase every session.
+Repomind is a Docker-first MCP repo query engine for coding agents.
 
-The goal is not to replace source code reading. The goal is to make source code reading targeted, cheaper, and more reliable.
+It indexes the currently checked-out state of a Git repository, records branch and commit metadata at index time, and serves structured, grounded repo queries on demand. Its job is not to replace source code reading. Its job is to make source code reading faster, more targeted, and more reliable.
 
-Repomind should act as a repository intelligence layer that exposes structured answers to questions like:
+Repomind reflects committed repository state at the time of the last successful index refresh. In-flight working tree edits remain in the coding agent’s own context in v1.
 
-- What does this repo do?
-- Which directories matter?
-- What are the critical files?
-- Where does a request or workflow begin?
-- Which files are likely edit points for a given task?
-- What changed recently?
+Repomind makes no LLM calls at query time.
 
 ## 2. Problem Statement
 
-Coding agents waste tokens and time re-understanding the same repository repeatedly.
+Coding agents repeatedly pay a context tax when working on the same repository.
 
-In a normal task, an agent often has to:
+Before they can make a useful change, they often need to:
+- inspect the directory tree
+- find manifests, configs, and entrypoints
+- infer architecture from scattered files
+- retrace workflows from filenames and structure
+- guess where a task should begin
+- re-check recent commits to understand what moved
 
-- list directories
-- inspect file trees
-- read entry files
-- infer architecture from file names
-- retrace important flows
-- guess where a change should be made
+This causes:
+1. higher repeated token usage
+2. slower time to first useful action
+3. inconsistent understanding across sessions
+4. too many wrong-file detours before the first correct edit
+5. incomplete changes because adjacent files, tests, or configs are missed
 
-This creates four problems:
+This pain becomes worse in medium and large repositories, monorepos, and repeated agent workflows on the same codebase.
 
-1. **High token usage** from repeated exploration
-2. **Slow task startup** because context must be rebuilt every session
-3. **Inconsistent understanding** across runs and across agents
-4. **Lower edit quality** because agents often inspect the wrong files first
+## 3. Product Thesis
 
-This pain becomes worse in medium or large repos, monorepos, and workflows where multiple tasks happen over time in the same codebase.
+Coding agents do not need perfect semantic understanding before they can begin useful work.
 
-## 3. Vision
+They need a grounded, refreshable repo index that helps answer:
+- what matters in this repository?
+- what does this directory or subsystem likely do?
+- what changed recently on the current branch?
+- which files are likely to matter for a task?
+- is the indexed snapshot still current?
 
-Repomind should become the MCP layer that gives coding agents a compact mental model of a repository before they start editing code.
-
-Instead of asking an agent to rediscover architecture from scratch, the client should be able to ask Repomind for structured repo context and then use raw file reads only where precision is needed.
+Repomind succeeds if it reliably reduces wandering before the first correct edit.
 
 ## 4. Goals
 
 ### Primary goals
-- Reduce repeated token spend for repo understanding
-- Reduce time-to-useful-context for coding agents
-- Provide a structured, reusable repo map through MCP
-- Improve consistency of agent understanding across repeated sessions
-- Help agents identify likely edit points before opening many files
+- reduce time to first useful context for coding agents
+- reduce the number of irrelevant file reads before the first correct edit
+- improve consistency of repo understanding across repeated sessions
+- provide structured, grounded repo data through MCP
+- surface recent committed changes that affect current work
 
 ### Secondary goals
-- Support recent change awareness
-- Support branch-specific or diff-specific overlays later
-- Support language-aware and framework-aware analysis over time
+- reduce repeated token spend
+- improve navigation in medium and large repositories
+- provide a path to richer analyzers in later iterations
 
 ## 5. Non-goals
 
-- Replacing normal source code reads
-- Acting as a code execution environment
-- Performing autonomous edits by itself
-- Replacing Git or code search tools
-- Guaranteeing perfect semantic understanding in v1
+Repomind v1 does not:
+- replace direct source code inspection
+- make autonomous code edits
+- model in-flight uncommitted working tree changes
+- provide natural-language question answering inside Repomind itself
+- require a hosted backend
+- require embeddings or vector retrieval
+- require language-server integration
+- maintain simultaneous live indexes for multiple branches
 
 ## 6. Target Users
 
 ### Primary users
-- Developers using coding agents repeatedly on the same repository
-- Teams building internal AI coding workflows
-- Agent platform builders who want structured repo context
+- developers using coding agents repeatedly on the same Git repository
+- teams building internal AI coding workflows
+- agent platform builders who want reusable, structured repo context
 
-### Early adopter profile
-A developer using Claude Code, Cursor, or similar coding agents on a medium-to-large repository who is frustrated by repeated context loading and wasted tokens.
+### Beachhead user
+A developer using Claude Code, Cursor, Codex, or similar tools on a real repository who is tired of the agent rediscovering the same codebase every session.
 
-## 7. User Stories
+## 7. Core Use Cases
 
-### Repository overview
-- As a coding agent, I want a compact repo overview so I can understand the codebase before reading dozens of files.
+Repomind should help a coding agent:
+- get a high-signal overview of the current repository state
+- understand important directories and files
+- see recent committed changes on the current branch
+- identify likely starting points for a task
+- determine whether the current index is stale
+- refresh the local index when the repository state has changed
 
-### Directory map
-- As a coding agent, I want to know what the main directories are for so I can navigate intentionally.
+## 8. Product Principles
 
-### Critical files
-- As a coding agent, I want a ranked list of important files so I can inspect the highest-signal files first.
+- grounded over clever
+- structured outputs over vague prose
+- local-first and inspectable by default
+- deterministic query behavior over hidden model calls
+- freshness must be visible
+- heuristics first, heavier semantics later
 
-### Edit-point suggestions
-- As a coding agent, I want likely edit targets for a task so I can start in the right place.
+## 9. Core Product Requirements
 
-### Change awareness
-- As a coding agent, I want recent changes summarized so I can understand what moved without scanning the whole repo again.
-
-### Refresh
-- As a coding agent or developer, I want to refresh repo intelligence after changes so the context stays trustworthy.
-
-## 8. Core Product Requirements
-
-### 8.1 Repository indexing
-The system must:
+### 9.1 Repository indexing
+Repomind must:
 - detect repository root
-- traverse the project while skipping noisy directories
+- detect the current checked-out branch and HEAD commit
+- traverse the project while skipping noisy and generated directories
 - identify important files and directories
-- build a local structured index
-- store index data locally for reuse
+- build and store a structured local index
+- record branch name, commit SHA, and index timestamp
 
-### 8.2 MCP tools
-The system must expose MCP tools for:
-- repository overview
-- directory map
-- critical files
-- recent changes
-- likely edit points
-- index refresh
+### 9.2 Query engine
+Repomind must expose structured MCP queries that return grounded repo data on demand.
 
-### 8.3 Grounded outputs
-The system should:
-- derive outputs from actual repo contents
-- avoid hallucinated architectural claims
-- preserve enough source references that outputs can be verified
+The system is a repo query engine, not a one-shot startup summary generator.
 
-### 8.4 Incremental usefulness
-The system should provide useful output even with lightweight heuristics in v1.
+### 9.3 Grounded outputs
+Repomind outputs must:
+- derive from actual repository contents and Git metadata when available
+- include enough source provenance to be inspectable
+- remain conservative when confidence is low
+- distinguish indexed repo state from live in-flight edits
 
-It does not need perfect semantic analysis on day one.
+### 9.4 Staleness and refresh
+On each query, Repomind must check the current branch and HEAD commit.
 
-## 9. Functional Requirements
+If the current snapshot differs from the indexed snapshot, Repomind must mark the index stale and either:
+- return stale status and allow explicit refresh, or
+- auto-refresh if configured
 
-### FR1. Repo overview
+### 9.5 Local and free operation
+Repomind must run locally, require no hosted backend, and make no LLM calls at query time.
+
+## 10. Functional Requirements
+
+### FR1. Repository overview
 Repomind must return:
 - repository name
 - root path
-- high-level summary
-- primary languages or stack hints
+- current branch at index time
+- indexed commit SHA
+- high-level stack hints
 - top directories
 - critical files
+- freshness metadata
 
-### FR2. Directory purpose map
-Repomind must return a ranked or filtered list of key directories with likely purpose descriptions.
+### FR2. Directory map
+Repomind must return a ranked or filtered list of important directories with likely role descriptions and representative files.
 
-### FR3. Critical files index
+### FR3. Critical files
 Repomind must rank and return high-signal files such as:
 - manifests
 - config files
-- major entrypoints
-- dense source files
 - root documentation
+- entrypoints
+- major source files
+- key tests
 
 ### FR4. Recent changes
-Repomind must surface recent Git history where available.
+Repomind must surface recent committed changes for the current repository state where Git metadata is available.
 
-### FR5. Edit-point suggestions
-Repomind must accept a natural-language task description and return likely files or directories to inspect first.
+### FR5. Edit suggestions
+Repomind must accept a task description and return likely files or directories to inspect first.
 
-### FR6. Refreshable local index
-Repomind must allow forced re-indexing.
+In v1 this must be heuristic and grounded. It must not rely on embeddings or query-time LLM reasoning.
 
-## 10. Non-Functional Requirements
+### FR6. Branch status
+Repomind must return:
+- indexed branch name
+- indexed commit SHA
+- current branch name
+- current HEAD commit SHA when available
+- whether the index is stale
+- whether refresh is recommended
+
+### FR7. Refresh index
+Repomind must allow the local index to be refreshed for the current checked-out repository state.
+
+## 11. MCP Tool Surface
+
+Repomind v1 must expose the following MCP tools:
+- `get_repo_overview`
+- `get_directory_map`
+- `get_critical_files`
+- `get_recent_changes`
+- `get_branch_status`
+- `get_edit_suggestions`
+- `refresh_index`
+
+## 12. Non-Functional Requirements
 
 ### Performance
-- first index build should be reasonable for local development repos
-- cached reads should be much faster than full rescans
+- first index build should be reasonable for local development repositories
+- repeated queries should be much faster than full rescans
+- checking branch and HEAD on each query should remain lightweight
 
 ### Reliability
 - must fail safely when Git metadata is unavailable
-- must degrade gracefully in non-Git directories
+- must degrade gracefully in non-Git directories with reduced functionality
+- must avoid silent stale responses pretending to be current
 
 ### Trust
-- outputs must remain inspectable and grounded in source content
-- summaries should be conservative over flashy
+- outputs must be inspectable and grounded in source content
+- each response should carry freshness and provenance metadata
+- summaries and suggestions should be conservative rather than flashy
 
 ### Portability
-- should run locally via MCP stdio
-- should not require a remote backend for v1
+- must run locally through MCP
+- must be Docker-supported as a first-class deployment path
+- must require no paid infrastructure in v1
 
-## 11. MVP Scope
+## 13. MVP Scope
 
 ### In scope
 - local MCP server
-- local repo walking and indexing
+- Docker-first deployment support
+- local repository walking and indexing
+- branch and commit metadata capture
 - directory summaries
 - critical file ranking
-- recent Git change summaries
-- task-to-edit-point suggestions
-- local cache
+- recent committed change summaries
+- task-to-edit suggestions
+- index staleness detection
+- refreshable local cache/index
 
 ### Out of scope
-- deep AST call graphing
+- natural-language answer generation inside Repomind
+- embeddings or vector retrieval
+- AST call graphs
 - language-server integration
 - hosted indexing
-- embeddings/vector retrieval
 - multi-user shared state
+- working tree intelligence
+- simultaneous multi-branch active indexing
 - automatic file watching
-- full branch intelligence model
+- PR and issue overlays
 
-## 12. Future Scope
-
-- AST-based symbol graphs
-- language-specific analyzers
-- framework detectors
-- branch/diff overlays
-- confidence scores
-- provenance metadata
-- worktree awareness
-- issue and PR overlays
-- index invalidation on file changes
-
-## 13. Success Metrics
+## 14. Success Metrics
 
 ### Primary metrics
-- reduction in average tokens used for repo understanding
-- reduction in time-to-first-useful-edit
-- reduction in number of files opened before first correct edit
+- reduction in number of files opened before the first correct edit
+- reduction in time to first useful edit
+- usefulness rating of edit suggestions and repo overview
+- repeated-session speed improvement on the same repository
 
 ### Secondary metrics
-- repeated session speedup on the same repo
-- usefulness rating of overview and edit-point tools
+- reduction in repeated token usage
+- stale-index detection accuracy
+- refresh usage rate
 - cache hit rate
 
-## 14. Risks
+## 15. Risks
 
-- summaries may become stale if refresh is not used enough
-- lightweight heuristics may be too shallow for complex repos
-- poor grounding would reduce trust fast
-- product may be mistaken for generic code search if positioning is weak
+- edit suggestions may be too shallow if heuristics are weak
+- stale indexes may reduce trust quickly
+- weak repo conventions may reduce inference quality
+- Docker-first setup may add adoption friction for some users
+- the product may be mistaken for a static repo summary tool if positioning is weak
 
-## 15. Open Questions
+## 16. Open Questions
 
-- What is the best cache format for long-term evolution?
-- Which languages should get first-class analyzers first?
-- How much of the repo graph should be precomputed vs generated on demand?
-- Should branch-aware overlays be a core feature or a later module?
-- How should Repomind expose provenance in MCP responses?
+- should stale indexes only warn by default or auto-refresh by default?
+- what exact heuristic signals should power `get_edit_suggestions` in v1?
+- how should non-Git directories degrade in the MCP responses?
+- when should per-branch stored indexes become worth the added complexity?
+- what later analyzers provide the biggest value after the heuristic MVP is proven?
 
-## 16. Positioning
+## 17. Positioning
 
-Repomind should be positioned as:
+Repomind is not:
+- a generic code search tool
+- a hosted code intelligence platform
+- a natural-language answer bot
+- a replacement for reading source code
 
-**Repository intelligence for coding agents**
-
-Not:
-- just a token-saving utility
-- just another code search tool
-- just a Git helper
-
-Token savings is the wedge.
-The real product is faster, more reliable repo understanding.
+Repomind is:
+- a Docker-first repo query engine for coding agents
+- a local MCP server that serves structured, grounded repo queries on demand
+- a reusable indexed context layer for repeated work on the same repository

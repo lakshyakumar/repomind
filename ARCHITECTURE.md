@@ -99,6 +99,7 @@ CREATE TABLE files (
   depth INTEGER NOT NULL,
   file_type TEXT NOT NULL,
   importance_score REAL NOT NULL,
+  inbound_ref_count INTEGER NOT NULL DEFAULT 0,
   path_tokens_json TEXT NOT NULL,
   header_tokens_json TEXT NOT NULL,
   representative_reason TEXT,
@@ -218,35 +219,37 @@ pnpm-lock.yaml
 ## 9. Importance Scoring
 
 ### File importance score
-The v1 file importance score is heuristic.
+The v1 file importance score is deterministic.
 
-Base weighting guidance:
-- manifest: +1.00
-- entrypoint: +0.90
-- config: +0.75
-- docs: +0.55
-- test: +0.45
-- source: +0.40
-- other: +0.20
+Base score by file type:
+- manifest: `1.00`
+- entrypoint: `0.90`
+- config: `0.75`
+- docs: `0.55`
+- test: `0.45`
+- source: `0.40`
+- other: `0.20`
 
-Additional boosts:
-- shallow depth bonus
-- moderate line-count bonus for non-trivial files
-- recent modification bonus
-- root-level documentation bonus
+Adjustments:
+- depth bonus: `max(0, 0.20 - 0.03 * depth)`
+- line-count bonus: `+0.10` for files with 80 to 800 lines, else `0`
+- recent modification bonus: `+0.10` if modified in the 30 most recently modified indexed files, else `0`
+- inbound reference bonus: `min(0.20, inbound_ref_count * 0.02)`
+- root documentation bonus: `+0.10` for root-level docs
+- generated/noisy penalty: `-0.30`
 
-Penalties:
-- generated or noisy file penalty
-- excessive depth penalty
+Formula:
+`importance_score = min(1.50, base + depth_bonus + line_bonus + recent_bonus + inbound_ref_bonus + root_docs_bonus - noisy_penalty)`
 
 The score is stored in `files.importance_score`.
 
 ### Directory importance score
-Directory score is derived from:
-- number of important files inside it
-- presence of entrypoints/manifests/configs
-- shallowness of depth
-- whether it is a top-level application directory
+Directory score is the sum of:
+- average importance of contained files multiplied by `0.6`
+- count of manifest, config, and entrypoint files multiplied by `0.1` each
+- shallow-depth bonus of `max(0, 0.2 - 0.03 * depth)`
+
+This score is stored in `directories.importance_score`.
 
 ## 10. Edit Suggestion Heuristics
 
@@ -265,8 +268,15 @@ For each indexed file, compute relevance using:
 5. file importance score
 
 ### Scoring
-- `relevance_score` comes from text/token matching across path, directory, and header tokens
-- `final_score = relevance_score * importance_score`
+- tokenize the task into lowercase unique tokens
+- tokenize file path, directory path, and header tokens the same way
+- `path_overlap = |task_tokens ∩ path_tokens| / |task_tokens|`
+- `dir_overlap = |task_tokens ∩ directory_tokens| / |task_tokens|`
+- `header_overlap = |task_tokens ∩ header_tokens| / |task_tokens|`
+- `relevance_score = 0.5 * path_overlap + 0.3 * dir_overlap + 0.2 * header_overlap`
+- exclude files where `relevance_score == 0`
+- normalize `importance_score` to a `0..1` range with `normalized_importance = min(1.0, importance_score / 1.5)`
+- `final_score = 0.7 * relevance_score + 0.3 * normalized_importance`
 
 ### Output behavior
 - return top 10 results by default
@@ -367,6 +377,7 @@ All tool responses must include a provenance block:
   "current_head_sha": "def456",
   "stale": true,
   "refresh_recommended": true,
+  "recommended_first_call": "refresh_index",
   "partial": false,
   "provenance": {}
 }
@@ -439,6 +450,18 @@ Responsibilities:
 - orchestrate full refresh
 - perform atomic write flow
 - record index run status
+
+## 12.5 Agent Usage Guidance
+
+Repomind should be described to MCP clients as a query engine for grounded repo context, not as a natural-language answer bot.
+
+Tool descriptions should guide agent behavior:
+- call `get_index_status` first when starting work on a repository
+- if stale, call `refresh_index` before trusting other results
+- if current, call `get_repo_overview` next
+- use `get_edit_suggestions` to narrow likely files before reading raw source
+
+The `get_index_status` response includes `recommended_first_call` so agents can follow the next action without guessing.
 
 ## 13. Staleness Check Placement
 

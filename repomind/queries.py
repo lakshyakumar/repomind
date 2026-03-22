@@ -469,3 +469,93 @@ def get_repo_overview(repo_root: str) -> RepoOverview:
         critical_files=critical_files,
         provenance=status.provenance,
     )
+
+
+# ---------------------------------------------------------------------------
+# get_directory_map
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class DirectoryMap:
+    """Result of :func:`get_directory_map`."""
+
+    directories: list[dict]
+    provenance: dict = field(default_factory=dict)
+
+
+def get_directory_map(
+    repo_root: str,
+    path_filter: str | None = None,
+) -> DirectoryMap:
+    """Return all indexed directories ordered by importance score.
+
+    Optionally restrict to directories whose path starts with *path_filter*
+    (e.g. ``"src"`` returns ``src``, ``src/utils``, etc.).
+
+    Args:
+        repo_root: path to the repository root (resolved internally).
+        path_filter: optional directory path prefix to restrict results.
+            Leading/trailing slashes are stripped before matching.
+
+    Returns:
+        :class:`DirectoryMap` matching the ARCHITECTURE.md §11 contract.
+
+    Raises:
+        ValueError: if *repo_root* is not a valid directory, or if no index
+            exists (caller should run ``refresh_index`` first).
+    """
+    import json as _json
+
+    repo_root = resolve_repo_root(repo_root)
+    status = get_index_status(repo_root)
+
+    if not status.has_index:
+        raise ValueError(
+            f"No index found for {repo_root!r}. Run refresh_index first."
+        )
+
+    # Normalise the filter: strip slashes so "src/", "/src", "src" all work.
+    normalized_filter: str | None = None
+    if path_filter is not None:
+        normalized_filter = path_filter.strip("/")
+
+    conn = open_db(repo_root)
+    try:
+        meta = conn.execute("SELECT repo_id FROM repo_index LIMIT 1").fetchone()
+        repo_id: str = meta["repo_id"]
+
+        dir_rows = conn.execute(
+            """
+            SELECT path, role, summary, representative_files_json, importance_score
+            FROM directories
+            WHERE repo_id = ?
+            ORDER BY importance_score DESC
+            """,
+            (repo_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    directories: list[dict] = []
+    for row in dir_rows:
+        path: str = row["path"]
+        if normalized_filter is not None:
+            # Include exact match and any child paths.
+            if path != normalized_filter and not path.startswith(
+                normalized_filter + "/"
+            ):
+                continue
+        directories.append(
+            {
+                "path": path,
+                "role": row["role"],
+                "summary": row["summary"],
+                "representative_files": _json.loads(
+                    row["representative_files_json"] or "[]"
+                ),
+                "importance_score": row["importance_score"],
+            }
+        )
+
+    return DirectoryMap(directories=directories, provenance=status.provenance)

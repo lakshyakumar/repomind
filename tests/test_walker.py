@@ -3,20 +3,16 @@
 from __future__ import annotations
 
 import os
-import stat
-import time
 from pathlib import Path
 
 import pytest
 
 from repomind.models import FileRecord
 from repomind.walker import (
-    NOISY_EXTENSIONS,
     NOISY_FILENAMES,
     SKIP_DIRS,
     walk_repo,
 )
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

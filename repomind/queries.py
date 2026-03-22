@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from repomind.db import get_db_path, open_db
+from repomind.refresh import refresh_index as _core_refresh
 from repomind.repo import (
     get_branch,
     get_head_sha,
@@ -199,4 +200,63 @@ def get_index_status(repo_root: str) -> IndexStatus:
         recommended_first_call=recommended_first_call,
         partial=partial,
         provenance=prov,
+    )
+
+
+# ---------------------------------------------------------------------------
+# run_refresh_index
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RefreshIndexResult:
+    """Result of :func:`run_refresh_index` — matches ARCHITECTURE.md §11 contract."""
+
+    status: str              # "ok" | "error"
+    refreshed: bool
+    files_indexed: int
+    directories_indexed: int
+    partial: bool
+    partial_reason: str | None
+    error_message: str | None
+    provenance: dict = field(default_factory=dict)
+
+
+def run_refresh_index(repo_root: str) -> RefreshIndexResult:
+    """Run a full index refresh and return a structured result with provenance.
+
+    Wraps the core :func:`repomind.refresh.refresh_index` pipeline and attaches
+    a provenance block reflecting the index state after the refresh attempt.
+
+    On success the provenance will show ``stale=False`` because the newly
+    written index matches the current branch and HEAD.  On failure the
+    provenance reflects whatever index exists (or empty if none).
+
+    Args:
+        repo_root: path to the repository root.
+
+    Returns:
+        :class:`RefreshIndexResult` — ``status="ok"`` on success,
+        ``status="error"`` if the pipeline failed (live DB untouched).
+
+    Raises:
+        ValueError: if *repo_root* is not a valid directory path.
+    """
+    repo_root = resolve_repo_root(repo_root)
+    core = _core_refresh(repo_root)
+
+    # get_index_status gives us the correct provenance in both the success
+    # case (index is now current) and the failure case (existing index or
+    # missing index).  It handles all the branch/HEAD comparison internally.
+    index_status = get_index_status(repo_root)
+
+    return RefreshIndexResult(
+        status=core.status,
+        refreshed=core.refreshed,
+        files_indexed=core.files_indexed,
+        directories_indexed=core.directories_indexed,
+        partial=core.partial,
+        partial_reason=core.partial_reason,
+        error_message=core.error_message,
+        provenance=index_status.provenance,
     )

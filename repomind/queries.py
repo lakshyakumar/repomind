@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass, field
 
 from repomind.db import get_db_path, open_db
@@ -259,4 +260,212 @@ def run_refresh_index(repo_root: str) -> RefreshIndexResult:
         partial_reason=core.partial_reason,
         error_message=core.error_message,
         provenance=index_status.provenance,
+    )
+
+
+# ---------------------------------------------------------------------------
+# get_repo_overview
+# ---------------------------------------------------------------------------
+
+# File extension → language name.  Used to derive stack_hints.
+_EXT_TO_LANG: dict[str, str] = {
+    ".py": "python",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".go": "go",
+    ".rs": "rust",
+    ".java": "java",
+    ".rb": "ruby",
+    ".php": "php",
+    ".swift": "swift",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".cs": "csharp",
+    ".cpp": "cpp",
+    ".cc": "cpp",
+    ".cxx": "cpp",
+    ".c": "c",
+    ".scala": "scala",
+    ".ex": "elixir",
+    ".exs": "elixir",
+    ".clj": "clojure",
+    ".hs": "haskell",
+    ".dart": "dart",
+    ".sh": "shell",
+    ".bash": "shell",
+}
+
+# Token keyword → tool/framework label.  Checked against stored path and
+# header token JSON columns (substring match on quoted token string).
+_TOOL_KEYWORDS: dict[str, str] = {
+    "mcp": "mcp",
+    "docker": "docker",
+    "kubernetes": "kubernetes",
+    "k8s": "kubernetes",
+    "fastapi": "fastapi",
+    "django": "django",
+    "flask": "flask",
+    "react": "react",
+    "vue": "vue",
+    "graphql": "graphql",
+    "grpc": "grpc",
+    "rails": "rails",
+    "spring": "spring",
+    "express": "express",
+}
+
+# Maximum items returned in overview lists.
+_TOP_DIRS_LIMIT = 10
+_CRITICAL_FILES_LIMIT = 10
+
+
+def _derive_stack_hints(conn: sqlite3.Connection, repo_id: str) -> list[str]:
+    """Derive tech-stack labels from indexed extension counts and token columns.
+
+    Returns up to 3 language hints (ordered by file count) followed by any
+    tool/framework hints found in path or header tokens (sorted).
+    """
+    # Language hints: group by extension, walk by count descending.
+    ext_rows = conn.execute(
+        """
+        SELECT extension, COUNT(*) AS cnt
+        FROM files
+        WHERE repo_id = ? AND file_type != 'generated' AND extension IS NOT NULL
+        GROUP BY extension
+        ORDER BY cnt DESC
+        """,
+        (repo_id,),
+    ).fetchall()
+
+    seen_langs: set[str] = set()
+    lang_hints: list[str] = []
+    for row in ext_rows:
+        lang = _EXT_TO_LANG.get(row["extension"])
+        if lang and lang not in seen_langs:
+            seen_langs.add(lang)
+            lang_hints.append(lang)
+            if len(lang_hints) == 3:
+                break
+
+    # Tool hints: substring scan on raw token JSON (quoted-token check avoids
+    # false positives, e.g. "document" containing "doc").
+    token_rows = conn.execute(
+        """
+        SELECT path_tokens_json, header_tokens_json
+        FROM files
+        WHERE repo_id = ? AND file_type != 'generated'
+        """,
+        (repo_id,),
+    ).fetchall()
+
+    seen_tools: set[str] = set()
+    tool_hints: list[str] = []
+    for row in token_rows:
+        combined = (row["path_tokens_json"] or "") + (row["header_tokens_json"] or "")
+        for kw, label in _TOOL_KEYWORDS.items():
+            if label not in seen_tools and f'"{kw}"' in combined:
+                seen_tools.add(label)
+                tool_hints.append(label)
+
+    return lang_hints + sorted(tool_hints)
+
+
+@dataclass
+class RepoOverview:
+    """Result of :func:`get_repo_overview`."""
+
+    repo_name: str
+    repo_root: str
+    is_git_repo: bool
+    stack_hints: list[str]
+    top_directories: list[dict]
+    critical_files: list[dict]
+    provenance: dict = field(default_factory=dict)
+
+
+def get_repo_overview(repo_root: str) -> RepoOverview:
+    """Return a high-level orientation snapshot for *repo_root*.
+
+    Queries the index for repo metadata, the top-scored directories, and the
+    top-scored non-generated files.  Stack hints are derived from extension
+    counts and stored token columns.
+
+    Args:
+        repo_root: path to the repository root (resolved internally).
+
+    Returns:
+        :class:`RepoOverview` matching the ARCHITECTURE.md §11 contract.
+
+    Raises:
+        ValueError: if *repo_root* is not a valid directory, or if no index
+            exists (caller should run ``refresh_index`` first).
+    """
+    repo_root = resolve_repo_root(repo_root)
+    status = get_index_status(repo_root)
+
+    if not status.has_index:
+        raise ValueError(
+            f"No index found for {repo_root!r}. Run refresh_index first."
+        )
+
+    conn = open_db(repo_root)
+    try:
+        meta = conn.execute("SELECT * FROM repo_index LIMIT 1").fetchone()
+        repo_id: str = meta["repo_id"]
+        repo_name: str = meta["repo_name"]
+        is_git: bool = bool(meta["is_git_repo"])
+
+        stack_hints = _derive_stack_hints(conn, repo_id)
+
+        dir_rows = conn.execute(
+            """
+            SELECT path, role, importance_score
+            FROM directories
+            WHERE repo_id = ?
+            ORDER BY importance_score DESC
+            LIMIT ?
+            """,
+            (repo_id, _TOP_DIRS_LIMIT),
+        ).fetchall()
+        top_directories = [
+            {
+                "path": r["path"],
+                "role": r["role"],
+                "importance_score": r["importance_score"],
+            }
+            for r in dir_rows
+        ]
+
+        file_rows = conn.execute(
+            """
+            SELECT path, file_type, importance_score
+            FROM files
+            WHERE repo_id = ? AND file_type != 'generated'
+            ORDER BY importance_score DESC
+            LIMIT ?
+            """,
+            (repo_id, _CRITICAL_FILES_LIMIT),
+        ).fetchall()
+        critical_files = [
+            {
+                "path": r["path"],
+                "file_type": r["file_type"],
+                "importance_score": r["importance_score"],
+            }
+            for r in file_rows
+        ]
+    finally:
+        conn.close()
+
+    return RepoOverview(
+        repo_name=repo_name,
+        repo_root=repo_root,
+        is_git_repo=is_git,
+        stack_hints=stack_hints,
+        top_directories=top_directories,
+        critical_files=critical_files,
+        provenance=status.provenance,
     )

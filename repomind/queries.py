@@ -636,3 +636,104 @@ def get_critical_files(repo_root: str) -> CriticalFiles:
     ]
 
     return CriticalFiles(files=files, provenance=status.provenance)
+
+
+# ---------------------------------------------------------------------------
+# get_recent_changes
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RecentChanges:
+    """Result of :func:`get_recent_changes`."""
+
+    is_git_repo: bool
+    commits: list[dict]
+    provenance: dict = field(default_factory=dict)
+
+
+def get_recent_changes(repo_root: str) -> RecentChanges:
+    """Return recent commits and their changed files from the index.
+
+    For non-Git repos the function degrades cleanly: ``is_git_repo`` is
+    ``False`` and ``commits`` is an empty list.
+
+    Args:
+        repo_root: path to the repository root (resolved internally).
+
+    Returns:
+        :class:`RecentChanges` matching the ARCHITECTURE.md §11 contract.
+
+    Raises:
+        ValueError: if *repo_root* is not a valid directory, or if no index
+            exists (caller should run ``refresh_index`` first).
+    """
+    repo_root = resolve_repo_root(repo_root)
+    status = get_index_status(repo_root)
+
+    if not status.has_index:
+        raise ValueError(
+            f"No index found for {repo_root!r}. Run refresh_index first."
+        )
+
+    if not status.is_git_repo:
+        return RecentChanges(
+            is_git_repo=False,
+            commits=[],
+            provenance=status.provenance,
+        )
+
+    conn = open_db(repo_root)
+    try:
+        meta = conn.execute("SELECT repo_id FROM repo_index LIMIT 1").fetchone()
+        repo_id: str = meta["repo_id"]
+
+        commit_rows = conn.execute(
+            """
+            SELECT commit_sha, subject, author_name, authored_at
+            FROM recent_commits
+            WHERE repo_id = ?
+            ORDER BY authored_at DESC
+            """,
+            (repo_id,),
+        ).fetchall()
+
+        # Batch-load all changed files in one query to avoid N+1 queries.
+        if commit_rows:
+            shas = [r["commit_sha"] for r in commit_rows]
+            placeholders = ",".join("?" * len(shas))
+            file_rows = conn.execute(
+                f"""
+                SELECT commit_sha, path
+                FROM commit_files
+                WHERE repo_id = ? AND commit_sha IN ({placeholders})
+                ORDER BY commit_sha, path
+                """,
+                [repo_id, *shas],
+            ).fetchall()
+        else:
+            file_rows = []
+    finally:
+        conn.close()
+
+    # Group files by commit sha.
+    files_by_sha: dict[str, list[str]] = {}
+    for fr in file_rows:
+        files_by_sha.setdefault(fr["commit_sha"], []).append(fr["path"])
+
+    commits: list[dict] = [
+        {
+            "commit_sha": r["commit_sha"],
+            "subject": r["subject"],
+            "author_name": r["author_name"],
+            "authored_at": r["authored_at"],
+            "files": files_by_sha.get(r["commit_sha"], []),
+        }
+        for r in commit_rows
+    ]
+
+    return RecentChanges(
+        is_git_repo=True,
+        commits=commits,
+        provenance=status.provenance,
+    )

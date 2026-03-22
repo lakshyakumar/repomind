@@ -559,3 +559,80 @@ def get_directory_map(
         )
 
     return DirectoryMap(directories=directories, provenance=status.provenance)
+
+
+# ---------------------------------------------------------------------------
+# get_critical_files
+# ---------------------------------------------------------------------------
+
+_FILE_TYPE_REASON: dict[str, str] = {
+    "manifest": "Project manifest",
+    "config": "Configuration file",
+    "entrypoint": "Application entrypoint",
+    "docs": "Documentation",
+    "test": "Test file",
+    "source": "Source file",
+    "other": "Indexed file",
+}
+
+
+@dataclass
+class CriticalFiles:
+    """Result of :func:`get_critical_files`."""
+
+    files: list[dict]
+    provenance: dict = field(default_factory=dict)
+
+
+def get_critical_files(repo_root: str) -> CriticalFiles:
+    """Return indexed files ranked by importance score, excluding generated files.
+
+    Files with ``file_type == 'generated'`` are excluded.  Each entry carries
+    a human-readable *reason* derived from its ``file_type``.
+
+    Args:
+        repo_root: path to the repository root (resolved internally).
+
+    Returns:
+        :class:`CriticalFiles` matching the ARCHITECTURE.md §11 contract.
+
+    Raises:
+        ValueError: if *repo_root* is not a valid directory, or if no index
+            exists (caller should run ``refresh_index`` first).
+    """
+    repo_root = resolve_repo_root(repo_root)
+    status = get_index_status(repo_root)
+
+    if not status.has_index:
+        raise ValueError(
+            f"No index found for {repo_root!r}. Run refresh_index first."
+        )
+
+    conn = open_db(repo_root)
+    try:
+        meta = conn.execute("SELECT repo_id FROM repo_index LIMIT 1").fetchone()
+        repo_id: str = meta["repo_id"]
+
+        file_rows = conn.execute(
+            """
+            SELECT path, file_type, importance_score
+            FROM files
+            WHERE repo_id = ? AND file_type != 'generated'
+            ORDER BY importance_score DESC
+            """,
+            (repo_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    files: list[dict] = [
+        {
+            "path": row["path"],
+            "file_type": row["file_type"],
+            "importance_score": row["importance_score"],
+            "reason": _FILE_TYPE_REASON.get(row["file_type"], "Indexed file"),
+        }
+        for row in file_rows
+    ]
+
+    return CriticalFiles(files=files, provenance=status.provenance)

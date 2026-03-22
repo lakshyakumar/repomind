@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass, field
 
 from repomind.db import get_db_path, open_db
+from repomind.extractor import _tokenize as _tokenize_text
 from repomind.refresh import refresh_index as _core_refresh
 from repomind.repo import (
     get_branch,
@@ -505,8 +507,6 @@ def get_directory_map(
         ValueError: if *repo_root* is not a valid directory, or if no index
             exists (caller should run ``refresh_index`` first).
     """
-    import json as _json
-
     repo_root = resolve_repo_root(repo_root)
     status = get_index_status(repo_root)
 
@@ -551,7 +551,7 @@ def get_directory_map(
                 "path": path,
                 "role": row["role"],
                 "summary": row["summary"],
-                "representative_files": _json.loads(
+                "representative_files": json.loads(
                     row["representative_files_json"] or "[]"
                 ),
                 "importance_score": row["importance_score"],
@@ -735,5 +735,150 @@ def get_recent_changes(repo_root: str) -> RecentChanges:
     return RecentChanges(
         is_git_repo=True,
         commits=commits,
+        provenance=status.provenance,
+    )
+
+
+# ---------------------------------------------------------------------------
+# get_edit_suggestions
+# ---------------------------------------------------------------------------
+
+_DEFAULT_SUGGESTION_LIMIT: int = 10
+_HIGH_IMPORTANCE_THRESHOLD: float = 0.7
+
+
+@dataclass
+class EditSuggestions:
+    """Result of :func:`get_edit_suggestions`."""
+
+    task: str
+    suggestions: list[dict]
+    provenance: dict = field(default_factory=dict)
+
+
+def _confidence(
+    matched_path: list[str],
+    matched_dir: list[str],
+    matched_header: list[str],
+    final_score: float,
+) -> str:
+    """Derive a conservative confidence label from signal breadth and score."""
+    signal_count = sum([bool(matched_path), bool(matched_dir), bool(matched_header)])
+    if signal_count == 3 and final_score >= 0.6:
+        return "high"
+    if signal_count >= 2 and final_score >= 0.4:
+        return "medium"
+    return "low"
+
+
+def get_edit_suggestions(
+    repo_root: str,
+    task: str,
+    limit: int = _DEFAULT_SUGGESTION_LIMIT,
+) -> EditSuggestions:
+    """Return ranked file suggestions for *task* based on token overlap and importance.
+
+    Scoring per ARCHITECTURE.md §10:
+    - tokenize *task* into lowercase unique tokens (same rules as indexer)
+    - for each indexed file compute overlap against path_tokens, directory_tokens
+      (derived from directory_path at query time), and header_tokens
+    - ``relevance_score = 0.5 * path_overlap + 0.3 * dir_overlap + 0.2 * header_overlap``
+    - exclude files with ``relevance_score == 0``
+    - ``final_score = 0.7 * relevance_score + 0.3 * normalized_importance``
+    - return top *limit* results ordered by final_score descending
+
+    Args:
+        repo_root: path to the repository root (resolved internally).
+        task: natural-language description of the edit task.
+        limit: maximum number of suggestions to return (default 10).
+
+    Returns:
+        :class:`EditSuggestions` matching the ARCHITECTURE.md §11 contract.
+
+    Raises:
+        ValueError: if *repo_root* is not a valid directory, or if no index
+            exists (caller should run ``refresh_index`` first).
+    """
+    repo_root = resolve_repo_root(repo_root)
+    status = get_index_status(repo_root)
+
+    if not status.has_index:
+        raise ValueError(
+            f"No index found for {repo_root!r}. Run refresh_index first."
+        )
+
+    task_tokens: set[str] = set(_tokenize_text(task))
+    if not task_tokens:
+        # Task reduced to nothing after stop-word filtering — no signal to match on.
+        return EditSuggestions(task=task, suggestions=[], provenance=status.provenance)
+
+    conn = open_db(repo_root)
+    try:
+        meta = conn.execute("SELECT repo_id FROM repo_index LIMIT 1").fetchone()
+        repo_id: str = meta["repo_id"]
+
+        file_rows = conn.execute(
+            """
+            SELECT path, directory_path, file_type, importance_score,
+                   path_tokens_json, header_tokens_json
+            FROM files
+            WHERE repo_id = ?
+            """,
+            (repo_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    n: int = len(task_tokens)
+    suggestions: list[dict] = []
+
+    for row in file_rows:
+        path_tokens: set[str] = set(json.loads(row["path_tokens_json"] or "[]"))
+        dir_tokens: set[str] = set(_tokenize_text(row["directory_path"] or ""))
+        header_tokens: set[str] = set(json.loads(row["header_tokens_json"] or "[]"))
+
+        matched_path = sorted(task_tokens & path_tokens)
+        matched_dir = sorted(task_tokens & dir_tokens)
+        matched_header = sorted(task_tokens & header_tokens)
+
+        path_overlap = len(matched_path) / n
+        dir_overlap = len(matched_dir) / n
+        header_overlap = len(matched_header) / n
+
+        relevance_score = (
+            0.5 * path_overlap + 0.3 * dir_overlap + 0.2 * header_overlap
+        )
+
+        if relevance_score == 0.0:
+            continue
+
+        normalized_importance = min(1.0, row["importance_score"] / 1.5)
+        final_score = 0.7 * relevance_score + 0.3 * normalized_importance
+
+        # Build human-readable reasons from signals that fired.
+        reasons: list[str] = []
+        if matched_path:
+            reasons.append(f"Path tokens matched: {', '.join(matched_path)}")
+        if matched_dir:
+            reasons.append(f"Directory token matched: {', '.join(matched_dir)}")
+        if matched_header:
+            reasons.append(f"Header tokens matched: {', '.join(matched_header)}")
+        if row["importance_score"] >= _HIGH_IMPORTANCE_THRESHOLD:
+            reasons.append("High file importance score")
+
+        suggestions.append(
+            {
+                "path": row["path"],
+                "file_type": row["file_type"],
+                "score": round(final_score, 4),
+                "confidence": _confidence(matched_path, matched_dir, matched_header, final_score),
+                "reason": reasons,
+            }
+        )
+
+    suggestions.sort(key=lambda s: s["score"], reverse=True)
+    return EditSuggestions(
+        task=task,
+        suggestions=suggestions[:limit],
         provenance=status.provenance,
     )

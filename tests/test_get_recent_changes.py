@@ -28,12 +28,11 @@ def _commit(path: Path, message: str, files: list[Path]) -> str:
     """Stage *files* and create a commit; return the short SHA."""
     for f in files:
         _git(path, "add", str(f.relative_to(path)))
-    result = subprocess.run(
+    subprocess.run(
         ["git", "commit", "-m", message],
         cwd=str(path),
         capture_output=True,
         check=True,
-        text=True,
     )
     sha = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"],

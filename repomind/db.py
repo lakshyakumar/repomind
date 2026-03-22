@@ -200,6 +200,25 @@ def _create_schema(conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------------------
 
 
+def open_fresh_db_at(path: Path) -> sqlite3.Connection:
+    """Create a fresh SQLite DB at *path* with the current schema.
+
+    Any existing file at *path* is silently replaced. Intended for the
+    temporary DB used in the atomic refresh flow — do not call for the
+    live DB path.
+
+    Returns a connection with WAL journal mode and row_factory = sqlite3.Row.
+    """
+    path.unlink(missing_ok=True)
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA foreign_keys = ON")
+    _create_schema(conn)
+    conn.commit()
+    return conn
+
+
 def open_db(repo_root: str) -> sqlite3.Connection:
     """Open (and initialise if needed) the SQLite index for *repo_root*.
 

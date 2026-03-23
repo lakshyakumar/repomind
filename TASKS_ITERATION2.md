@@ -23,8 +23,13 @@ The goal is to improve retrieval quality and large-repo usability without reopen
 The current exact-token retrieval is too brittle for real task phrasing.
 
 **Scope**
-- add SQLite FTS5 virtual table(s) for file retrieval
-- index path text, directory path, and header text during refresh
+- add a standalone SQLite FTS5 virtual table for file retrieval, not a `content=` table
+- populate it with a batch `INSERT ... SELECT` after the main file insert completes during refresh
+- index these content columns:
+  - raw `path`
+  - raw `directory_path`
+  - space-joined header tokens derived from `header_tokens_json`
+- use the default `unicode61` tokenizer
 - rebuild FTS data during every full refresh
 - do not add incremental FTS sync logic
 
@@ -33,7 +38,7 @@ The current exact-token retrieval is too brittle for real task phrasing.
 
 **Acceptance criteria**
 - FTS table exists and is populated after refresh
-- FTS queries can retrieve indexed files by token/prefix-style search
+- `MATCH` queries retrieve indexed files by token/prefix-style search
 - existing v1 behavior remains intact
 
 **PR-sized**
@@ -48,16 +53,17 @@ Many source files have weak or absent header comments, but import lines are chea
 
 **Scope**
 - extract import-line tokens for Python files
-- extract JS/TS import tokens if low-friction
 - store import tokens in the files table
-- filter obvious low-signal noise tokens conservatively
+- define `_IMPORT_STOP_TOKENS: frozenset[str]` as a named constant before writing extraction logic
+- `_IMPORT_STOP_TOKENS` must include obvious low-signal import noise such as `os`, `sys`, `re`, `json`, `typing`, `dataclasses`, `pathlib`, `collections`, `fs`, and `path`
+- JS/TS import extraction is out of scope for the first pass of iteration 2 unless explicitly added later as a follow-up task
 
 **Dependencies**
 - existing extraction/index pipeline
 
 **Acceptance criteria**
-- import tokens are stored for supported languages
-- extraction is deterministic and tested
+- import tokens are stored for Python files
+- stop-token filtering is deterministic and tested
 - indexing time does not regress badly
 
 **PR-sized**
@@ -79,7 +85,7 @@ Candidate retrieval is the main weak point of v1.
 - I2-T1
 
 **Acceptance criteria**
-- singular/plural-ish retrieval improves on realistic examples such as `webhook` vs `webhooks`
+- a test asserts that task string `webhook` surfaces at least one file with `webhooks` in its path via FTS, not fallback
 - fallback behavior remains predictable
 - response shape stays compatible with current clients
 
@@ -88,16 +94,15 @@ Candidate retrieval is the main weak point of v1.
 
 ---
 
-## I2-T4. Improve edit-suggestion scoring and explanations
+## I2-T4a. Improve edit-suggestion scoring
 
 **Why**
-Better retrieval alone is not enough if ranking and reasons are weak.
+Better retrieval alone is not enough if ranking is weak or import signals are ignored.
 
 **Scope**
 - incorporate import-token signal into ranking
 - refine the ranking formula to balance retrieval relevance and importance score
-- improve `reason[]` so it explains which signals actually fired
-- add `empty_reason` or equivalent for zero-result cases
+- explicitly decide whether inbound-ref behavior stays indirect through `importance_score` or becomes a direct ranking signal
 
 **Dependencies**
 - I2-T2
@@ -105,6 +110,27 @@ Better retrieval alone is not enough if ranking and reasons are weak.
 
 **Acceptance criteria**
 - results are ranked more sanely on realistic task prompts
+- import-only match cases are covered by tests
+- ranking changes are isolated from presentation-only changes
+
+**PR-sized**
+- yes
+
+---
+
+## I2-T4b. Improve edit-suggestion explanations
+
+**Why**
+Ranking improvements are hard to trust if `reason[]` is vague or empty-result cases are silent.
+
+**Scope**
+- improve `reason[]` so it explains which signals actually fired
+- add `empty_reason` or equivalent for zero-result cases
+
+**Dependencies**
+- I2-T4a
+
+**Acceptance criteria**
 - `reason[]` is useful and non-redundant
 - empty results are explicit, not silent
 
@@ -121,6 +147,8 @@ The current partial-index behavior is safe but blunt.
 **Scope**
 - add env-configurable file limit
 - add env-configurable depth cap
+- `REPOMIND_MAX_DEPTH` replaces `_PARTIAL_MAX_DEPTH` as the single depth cap
+- both file-count and depth caps can set `partial=true` independently
 - replace bare partial-reason strings with structured partial metadata
 - surface structured partial info in provenance/status
 
@@ -175,7 +203,10 @@ The new retrieval path and trust signals need system-level testing, not just uni
 - I2-T1 through I2-T6 as needed
 
 **Acceptance criteria**
-- iteration-2 behaviors are exercised through the full refresh/query path
+- FTS scenario: `webhook` in task matches a file with `webhooks` in its path via FTS, not fallback
+- import-token scenario: Python file importing `repomind.queries` yields `queries` in import tokens and surfaces for task `queries`, while stop-tokens like `os` do not contribute
+- partial scenario: low file limit on a repo over the threshold produces `partial=true` and structured `partial_reason`
+- quality-signal scenario: fresh index -> `full`, partial index -> `partial`, missing index -> `degraded`
 - no regressions in v1 behavior
 
 **PR-sized**

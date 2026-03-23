@@ -746,6 +746,20 @@ def get_recent_changes(repo_root: str) -> RecentChanges:
 _DEFAULT_SUGGESTION_LIMIT: int = 10
 _HIGH_IMPORTANCE_THRESHOLD: float = 0.7
 
+# ---------------------------------------------------------------------------
+# Scoring formula constants (I2-T4a)
+# Relevance weights must sum to 1.0.
+# ---------------------------------------------------------------------------
+_W_PATH: float = 0.45       # path token overlap
+_W_DIR: float = 0.25        # directory token overlap
+_W_HEADER: float = 0.15     # header comment token overlap
+_W_IMPORT: float = 0.15     # import statement token overlap (I2-T2+)
+_W_RELEVANCE: float = 0.70  # relevance weight in final_score
+_W_IMPORTANCE: float = 0.30  # importance weight in final_score
+# Inbound-ref signal stays indirect: it is already baked into importance_score
+# via score_file() in the indexer, so it influences _W_IMPORTANCE without
+# requiring a separate direct term here.
+
 
 @dataclass
 class EditSuggestions:
@@ -846,7 +860,7 @@ def get_edit_suggestions(
             file_rows = conn.execute(
                 """
                 SELECT f.path, f.directory_path, f.file_type, f.importance_score,
-                       f.path_tokens_json, f.header_tokens_json
+                       f.path_tokens_json, f.header_tokens_json, f.import_tokens_json
                 FROM files f
                 WHERE f.repo_id = ?
                   AND f.id IN (
@@ -866,7 +880,7 @@ def get_edit_suggestions(
             file_rows = conn.execute(
                 """
                 SELECT path, directory_path, file_type, importance_score,
-                       path_tokens_json, header_tokens_json
+                       path_tokens_json, header_tokens_json, import_tokens_json
                 FROM files
                 WHERE repo_id = ?
                 """,
@@ -882,24 +896,30 @@ def get_edit_suggestions(
         path_tokens: set[str] = set(json.loads(row["path_tokens_json"] or "[]"))
         dir_tokens: set[str] = set(_tokenize_text(row["directory_path"] or ""))
         header_tokens: set[str] = set(json.loads(row["header_tokens_json"] or "[]"))
+        import_tokens: set[str] = set(json.loads(row["import_tokens_json"] or "[]"))
 
         matched_path = sorted(task_tokens & path_tokens)
         matched_dir = sorted(task_tokens & dir_tokens)
         matched_header = sorted(task_tokens & header_tokens)
+        matched_import = sorted(task_tokens & import_tokens)
 
         path_overlap = len(matched_path) / n
         dir_overlap = len(matched_dir) / n
         header_overlap = len(matched_header) / n
+        import_overlap = len(matched_import) / n
 
         relevance_score = (
-            0.5 * path_overlap + 0.3 * dir_overlap + 0.2 * header_overlap
+            _W_PATH * path_overlap
+            + _W_DIR * dir_overlap
+            + _W_HEADER * header_overlap
+            + _W_IMPORT * import_overlap
         )
 
         if relevance_score == 0.0:
             continue
 
         normalized_importance = min(1.0, row["importance_score"] / 1.5)
-        final_score = 0.7 * relevance_score + 0.3 * normalized_importance
+        final_score = _W_RELEVANCE * relevance_score + _W_IMPORTANCE * normalized_importance
 
         # Build human-readable reasons from signals that fired.
         reasons: list[str] = []

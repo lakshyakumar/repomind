@@ -753,7 +753,22 @@ class EditSuggestions:
 
     task: str
     suggestions: list[dict]
+    # "fts" when the primary FTS5 retrieval produced candidates;
+    # "fallback" when FTS returned zero results and the full-table-scan path
+    # was used instead.  Present for observability; not part of the public
+    # response contract.
+    retrieval_method: str = "fallback"
     provenance: dict = field(default_factory=dict)
+
+
+def _build_fts_match(task_tokens: set[str]) -> str:
+    """Build an FTS5 MATCH expression with prefix matching for each task token.
+
+    Prefix queries (``token*``) allow 'webhook' to surface documents containing
+    'webhooks'.  This is the correct form for I2-T3 retrieval.
+    Tokens are sorted for deterministic, readable query strings.
+    """
+    return " OR ".join(f"{t}*" for t in sorted(task_tokens))
 
 
 def _confidence(
@@ -810,22 +825,53 @@ def get_edit_suggestions(
     task_tokens: set[str] = set(_tokenize_text(task))
     if not task_tokens:
         # Task reduced to nothing after stop-word filtering — no signal to match on.
-        return EditSuggestions(task=task, suggestions=[], provenance=status.provenance)
+        return EditSuggestions(
+            task=task,
+            suggestions=[],
+            retrieval_method="fallback",
+            provenance=status.provenance,
+        )
 
     conn = open_db(repo_root)
     try:
         meta = conn.execute("SELECT repo_id FROM repo_index LIMIT 1").fetchone()
         repo_id: str = meta["repo_id"]
 
-        file_rows = conn.execute(
-            """
-            SELECT path, directory_path, file_type, importance_score,
-                   path_tokens_json, header_tokens_json
-            FROM files
-            WHERE repo_id = ?
-            """,
-            (repo_id,),
-        ).fetchall()
+        # ------------------------------------------------------------------
+        # Primary: FTS5 candidate retrieval (prefix match per token, OR-joined)
+        # ------------------------------------------------------------------
+        retrieval_method = "fts"
+        try:
+            fts_match = _build_fts_match(task_tokens)
+            file_rows = conn.execute(
+                """
+                SELECT f.path, f.directory_path, f.file_type, f.importance_score,
+                       f.path_tokens_json, f.header_tokens_json
+                FROM files f
+                WHERE f.repo_id = ?
+                  AND f.id IN (
+                      SELECT rowid FROM files_fts WHERE files_fts MATCH ?
+                  )
+                """,
+                (repo_id, fts_match),
+            ).fetchall()
+        except Exception:  # noqa: BLE001 — graceful fallback if FTS table absent
+            file_rows = []
+
+        # ------------------------------------------------------------------
+        # Fallback: full table scan when FTS produced zero candidates
+        # ------------------------------------------------------------------
+        if not file_rows:
+            retrieval_method = "fallback"
+            file_rows = conn.execute(
+                """
+                SELECT path, directory_path, file_type, importance_score,
+                       path_tokens_json, header_tokens_json
+                FROM files
+                WHERE repo_id = ?
+                """,
+                (repo_id,),
+            ).fetchall()
     finally:
         conn.close()
 
@@ -880,5 +926,6 @@ def get_edit_suggestions(
     return EditSuggestions(
         task=task,
         suggestions=suggestions[:limit],
+        retrieval_method=retrieval_method,
         provenance=status.provenance,
     )

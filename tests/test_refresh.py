@@ -382,11 +382,9 @@ def test_partial_index_flagged_when_threshold_exceeded(
     repo.mkdir()
     (repo / "README.md").write_text("# Big repo\n")
 
-    # Patch the threshold to 3 so our tiny repo triggers partial mode.
-    import repomind.refresh as refresh_mod
-
-    monkeypatch.setattr(refresh_mod, "_PARTIAL_FILE_THRESHOLD", 3)
-    monkeypatch.setattr(refresh_mod, "_PARTIAL_MAX_DEPTH", 0)
+    # Use REPOMIND_FILE_LIMIT=3 so our tiny repo triggers partial mode.
+    monkeypatch.setenv("REPOMIND_FILE_LIMIT", "3")
+    monkeypatch.setenv("REPOMIND_MAX_DEPTH", "0")
 
     # Create 5 root-level files and 2 nested files (depth 1).
     for i in range(5):
@@ -399,7 +397,8 @@ def test_partial_index_flagged_when_threshold_exceeded(
     result = refresh_index(str(repo))
     assert result.status == "ok"
     assert result.partial is True
-    assert result.partial_reason is not None
+    assert isinstance(result.partial_reason, dict)
+    assert result.partial_reason["cap_type"] in {"file_count", "depth"}
 
     # With max_depth=0, only root-level files indexed (depth 0).
     conn = open_db(str(repo))

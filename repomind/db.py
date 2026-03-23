@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Bump this when the schema changes. open_db() will drop and recreate all
 # tables when the stored version does not match.
-CURRENT_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 # ---------------------------------------------------------------------------
 # Storage path helpers (T02)

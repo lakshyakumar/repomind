@@ -267,10 +267,7 @@ def test_failure_no_existing_index_provenance_empty(
 def test_partial_flag_surfaces_in_result(
     plain_repo: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import repomind.refresh as rm
-
-    monkeypatch.setattr(rm, "_PARTIAL_FILE_THRESHOLD", 0)
-    monkeypatch.setattr(rm, "_PARTIAL_MAX_DEPTH", 0)
+    monkeypatch.setenv("REPOMIND_FILE_LIMIT", "0")
     result = run_refresh_index(str(plain_repo))
     assert result.partial is True
     assert result.provenance["partial"] is True

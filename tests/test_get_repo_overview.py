@@ -325,14 +325,12 @@ def test_provenance_stale_true_when_head_advanced(
 
 
 def test_provenance_partial_reflected(tmp_path: Path, storage: Path) -> None:
-    import repomind.refresh as rm
-
     r = tmp_path / "partial"
     r.mkdir()
     (r / "main.py").write_text("x=1\n")
 
     monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr(rm, "_PARTIAL_FILE_THRESHOLD", 0)
+    monkeypatch.setenv("REPOMIND_FILE_LIMIT", "0")
     try:
         run_refresh_index(str(r))
     finally:

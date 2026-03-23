@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Bump this when the schema changes. open_db() will drop and recreate all
 # tables when the stored version does not match.
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 # ---------------------------------------------------------------------------
 # Storage path helpers (T02)
@@ -160,7 +160,10 @@ CREATE INDEX IF NOT EXISTS idx_commit_files_repo_path
 
 # Ordered for safe DROP (children before parents, though SQLite doesn't
 # enforce FK by default; kept explicit for clarity).
+# files_fts is a virtual table created during refresh; include it here so
+# open_db()'s schema-version-mismatch path drops it cleanly.
 _TABLE_NAMES = [
+    "files_fts",
     "index_runs",
     "commit_files",
     "recent_commits",

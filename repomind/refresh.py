@@ -254,6 +254,47 @@ def _write_directories(
     )
 
 
+def _build_files_fts(conn: sqlite3.Connection, repo_id: str) -> None:
+    """Drop, recreate, and populate the FTS5 virtual table for *repo_id*.
+
+    The table is standalone (not a content= table) and is rebuilt from scratch
+    on every refresh.  The rowid of each FTS row matches files.id so callers
+    can join back to the files table.
+
+    Columns:
+      path             — raw file path string
+      directory_path   — raw directory path string
+      header_tokens    — space-joined tokens from header_tokens_json
+
+    Tokenizer: unicode61 (default; no custom configuration in Iteration 2).
+    """
+    conn.execute("DROP TABLE IF EXISTS files_fts")
+    conn.execute(
+        """
+        CREATE VIRTUAL TABLE files_fts USING fts5(
+            path,
+            directory_path,
+            header_tokens,
+            tokenize = 'unicode61'
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO files_fts(rowid, path, directory_path, header_tokens)
+        SELECT
+            f.id,
+            f.path,
+            f.directory_path,
+            (SELECT group_concat(value, ' ')
+               FROM json_each(f.header_tokens_json))
+        FROM files f
+        WHERE f.repo_id = ?
+        """,
+        (repo_id,),
+    )
+
+
 def _write_commits(
     conn: sqlite3.Connection,
     repo_id: str,
@@ -437,6 +478,7 @@ def refresh_index(repo_root: str) -> RefreshResult:
             conn, repo_id, repo_root, branch, head, indexed_at, git, partial, partial_reason
         )
         _write_files(conn, repo_id, scored_files, ref_counts)
+        _build_files_fts(conn, repo_id)
         _write_directories(conn, repo_id, dir_records)
         _write_commits(conn, repo_id, commits)
         _complete_run(conn, run_id, len(scored_files), len(dir_records), partial)

@@ -7,7 +7,7 @@ from pathlib import Path
 
 # Bump this when the schema changes. open_db() will drop and recreate all
 # tables when the stored version does not match.
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 # ---------------------------------------------------------------------------
 # Storage path helpers (T02)
@@ -103,6 +103,7 @@ CREATE TABLE IF NOT EXISTS files (
   inbound_ref_count    INTEGER NOT NULL DEFAULT 0,
   path_tokens_json     TEXT NOT NULL,
   header_tokens_json   TEXT NOT NULL,
+  import_tokens_json   TEXT NOT NULL DEFAULT '[]',
   representative_reason TEXT,
   last_modified_ts     TEXT,
   UNIQUE(repo_id, path)

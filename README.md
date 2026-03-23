@@ -16,32 +16,31 @@ It indexes the currently checked-out state of a Git repository, records branch a
 | `get_recent_changes` | Recent commits and changed files |
 | `get_edit_suggestions` | Ranked file suggestions for a task description |
 
-## Local setup
-
-Requires Python 3.11+.
+## Local setup (venv)
 
 ```bash
-# Install (production dependencies only)
-pip install -e .
-
-# Install with dev dependencies
+git clone https://github.com/lakshyakumar/repomind.git
+cd repomind
+git checkout dev
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -U pip
 pip install -e ".[dev]"
-
-# Run the test suite
-make test
-
-# Lint
-make lint
-
-# Lint + test together
 make check
 ```
 
-The `repomind` entry point is registered by the package install. Confirm it is available:
+If you reopen the repo later, reactivate the environment with:
 
 ```bash
-which repomind
+source .venv/bin/activate
 ```
+
+The MCP server entrypoint is then:
+
+```bash
+.venv/bin/repomind
+```
+
 
 ## MCP configuration
 
@@ -132,7 +131,59 @@ Repomind stores its index at `~/.repomind/` by default. Override with:
 export REPOMIND_STORAGE_ROOT=/custom/path
 ```
 
+## Why this is useful for agents
+
+Repomind is useful when an agent keeps paying the same repo-context tax over and over.
+
+Instead of repeatedly listing directories, opening manifests, grepping for entrypoints, and rediscovering recent changes, the agent can query a local index first and read source files more selectively.
+
+### What should improve
+- fewer irrelevant file reads before the first correct edit
+- fewer repeated repo-exploration tool calls
+- lower token/context burn from re-learning the same codebase
+- faster time to first useful change on repeated sessions
+- clearer stale-vs-fresh signals before trusting repo context
+
+### Practical metrics to track
+If you want to prove Repomind is helping, compare a normal agent workflow vs a Repomind-first workflow on the same repo and task set.
+
+Track things like:
+- **files opened before first correct edit**
+- **time to first useful edit**
+- **number of repo-exploration tool calls** such as repeated `find`, `ls`, `grep`, `read`, or code-search calls
+- **token spend / context usage** if your client exposes it
+- **refresh frequency** and stale-index detection rate
+
+### Agent-oriented success signal
+A good outcome is not “the overview looks nice.”
+A good outcome is:
+- the agent starts in the right files sooner
+- asks fewer exploratory questions about the repo
+- avoids re-reading stable architecture every session
+- produces fewer wrong-file detours before making the intended change
+
+
 ## Docs
 
 - [PRD](./PRD.md)
 - [Architecture](./ARCHITECTURE.md)
+
+
+## Docker setup
+
+Build the image:
+
+```bash
+docker build -t repomind:latest .
+```
+
+Run it as an MCP stdio server with your repo mounted in:
+
+```bash
+docker run --rm -i   -v /absolute/path/to/your/repo:/repo   -v "$HOME/.repomind:/root/.repomind"   repomind:latest
+```
+
+Notes:
+- replace `/absolute/path/to/your/repo` with the real repo path you want the MCP client to point at
+- the `~/.repomind` mount keeps the local index/cache persistent between runs
+- this is an stdio MCP server, so it will sit quietly until a client connects

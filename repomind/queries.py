@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from repomind.db import get_db_path, open_db
@@ -32,6 +33,7 @@ def _build_provenance(
     stale: bool,
     partial: bool,
     partial_reason: dict[str, Any] | None = None,
+    quality_signal: str = "degraded",
 ) -> dict:
     prov: dict[str, Any] = {
         "repo_root": repo_root,
@@ -42,6 +44,7 @@ def _build_provenance(
         "current_head_sha": current_head_sha,
         "stale": stale,
         "partial": partial,
+        "quality_signal": quality_signal,
     }
     if partial and partial_reason is not None:
         prov["partial_reason"] = partial_reason
@@ -76,8 +79,27 @@ class IndexStatus:
     recommended_first_call: str  # "refresh_index" | "get_repo_overview"
     # Whether the stored index is a partial index (depth-capped).
     partial: bool
+    # Trust signals (I2-T6).
+    # Seconds elapsed since the index was written; None when no index exists.
+    age_seconds: float | None
+    # Number of files stored in the index; None when no index exists.
+    indexed_file_count: int | None
+    # Composite trust signal: "full" | "partial" | "degraded".
+    # "degraded" = no index; "partial" = partial index; "full" = complete index.
+    quality_signal: str
     # Provenance block attached to every tool response.
     provenance: dict = field(default_factory=dict)
+
+
+def _index_age_seconds(indexed_at: str | None) -> float | None:
+    """Return elapsed seconds since *indexed_at* (UTC ISO string), or None."""
+    if indexed_at is None:
+        return None
+    try:
+        dt = datetime.fromisoformat(indexed_at)
+        return (datetime.now(tz=timezone.utc) - dt).total_seconds()
+    except (ValueError, TypeError):
+        return None
 
 
 def get_index_status(repo_root: str) -> IndexStatus:
@@ -121,6 +143,7 @@ def get_index_status(repo_root: str) -> IndexStatus:
             current_head_sha=current_head,
             stale=False,
             partial=False,
+            quality_signal="degraded",
         )
         return IndexStatus(
             is_git_repo=git,
@@ -134,6 +157,9 @@ def get_index_status(repo_root: str) -> IndexStatus:
             refresh_recommended=True,
             recommended_first_call="refresh_index",
             partial=False,
+            age_seconds=None,
+            indexed_file_count=None,
+            quality_signal="degraded",
             provenance=prov,
         )
 
@@ -141,6 +167,14 @@ def get_index_status(repo_root: str) -> IndexStatus:
     conn = open_db(repo_root)
     try:
         row = conn.execute("SELECT * FROM repo_index LIMIT 1").fetchone()
+        if row is not None:
+            file_count_row = conn.execute(
+                "SELECT COUNT(*) AS cnt FROM files WHERE repo_id = ?",
+                (row["repo_id"],),
+            ).fetchone()
+            indexed_file_count: int | None = file_count_row["cnt"]
+        else:
+            indexed_file_count = None
     finally:
         conn.close()
 
@@ -155,6 +189,7 @@ def get_index_status(repo_root: str) -> IndexStatus:
             current_head_sha=current_head,
             stale=False,
             partial=False,
+            quality_signal="degraded",
         )
         return IndexStatus(
             is_git_repo=git,
@@ -168,6 +203,9 @@ def get_index_status(repo_root: str) -> IndexStatus:
             refresh_recommended=True,
             recommended_first_call="refresh_index",
             partial=False,
+            age_seconds=None,
+            indexed_file_count=None,
+            quality_signal="degraded",
             provenance=prov,
         )
 
@@ -187,6 +225,9 @@ def get_index_status(repo_root: str) -> IndexStatus:
     else:
         partial_reason = None
 
+    age_seconds = _index_age_seconds(indexed_at)
+    quality_signal = "partial" if partial else "full"
+
     # Staleness is only meaningful for Git repos.
     if git:
         stale = (current_branch != indexed_branch) or (current_head != indexed_head)
@@ -205,6 +246,7 @@ def get_index_status(repo_root: str) -> IndexStatus:
         stale=stale,
         partial=partial,
         partial_reason=partial_reason,
+        quality_signal=quality_signal,
     )
 
     return IndexStatus(
@@ -219,6 +261,9 @@ def get_index_status(repo_root: str) -> IndexStatus:
         refresh_recommended=stale,
         recommended_first_call=recommended_first_call,
         partial=partial,
+        age_seconds=age_seconds,
+        indexed_file_count=indexed_file_count,
+        quality_signal=quality_signal,
         provenance=prov,
     )
 

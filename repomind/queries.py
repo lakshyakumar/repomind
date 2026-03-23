@@ -772,6 +772,11 @@ class EditSuggestions:
     # was used instead.  Present for observability; not part of the public
     # response contract.
     retrieval_method: str = "fallback"
+    # Non-None only when suggestions is empty:
+    #   "no_token_overlap"  — task had scoreable tokens but no file matched
+    #   "stop_words_only"   — task reduced to empty token set after filtering
+    #   None                — suggestions list is non-empty
+    empty_reason: str | None = None
     provenance: dict = field(default_factory=dict)
 
 
@@ -843,6 +848,7 @@ def get_edit_suggestions(
             task=task,
             suggestions=[],
             retrieval_method="fallback",
+            empty_reason="stop_words_only",
             provenance=status.provenance,
         )
 
@@ -921,14 +927,21 @@ def get_edit_suggestions(
         normalized_importance = min(1.0, row["importance_score"] / 1.5)
         final_score = _W_RELEVANCE * relevance_score + _W_IMPORTANCE * normalized_importance
 
-        # Build human-readable reasons from signals that fired.
+        # Build human-readable reasons identifying which layer fired.
+        # Path match label reflects the active retrieval path so agents can
+        # tell whether the result came from FTS prefix or exact-token search.
         reasons: list[str] = []
         if matched_path:
-            reasons.append(f"Path tokens matched: {', '.join(matched_path)}")
+            path_label = "fts" if retrieval_method == "fts" else "exact"
+            reasons.append(
+                f"Path match ({path_label}): {', '.join(matched_path)}"
+            )
         if matched_dir:
             reasons.append(f"Directory token matched: {', '.join(matched_dir)}")
         if matched_header:
             reasons.append(f"Header tokens matched: {', '.join(matched_header)}")
+        if matched_import:
+            reasons.append(f"Import match: {', '.join(matched_import)}")
         if row["importance_score"] >= _HIGH_IMPORTANCE_THRESHOLD:
             reasons.append("High file importance score")
 
@@ -943,9 +956,12 @@ def get_edit_suggestions(
         )
 
     suggestions.sort(key=lambda s: s["score"], reverse=True)
+    top = suggestions[:limit]
+    empty_reason: str | None = None if top else "no_token_overlap"
     return EditSuggestions(
         task=task,
-        suggestions=suggestions[:limit],
+        suggestions=top,
         retrieval_method=retrieval_method,
+        empty_reason=empty_reason,
         provenance=status.provenance,
     )

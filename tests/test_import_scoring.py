@@ -223,11 +223,12 @@ def test_suggestions_still_ordered_descending(import_signal_repo: Path):
     assert scores == sorted(scores, reverse=True)
 
 
-def test_reason_strings_unchanged(import_signal_repo: Path):
-    """I2-T4a must not add import-specific reason strings (that is I2-T4b)."""
+def test_import_match_reason_present_when_import_signal_fires(import_signal_repo: Path):
+    """I2-T4b: import-matching files include an 'Import match' reason entry."""
     result = get_edit_suggestions(str(import_signal_repo), "queries edit suggestions")
-    for s in result.suggestions:
-        for r in s.get("reason", []):
-            assert "Import" not in r, (
-                f"Unexpected import reason in I2-T4a: {r!r}"
-            )
+    cache_suggestions = [s for s in result.suggestions if "cache" in s["path"]]
+    assert cache_suggestions, "infra/cache.py must appear for this task"
+    cache = cache_suggestions[0]
+    assert any("Import match" in r for r in cache["reason"]), (
+        f"Expected 'Import match' reason for cache.py, got: {cache['reason']}"
+    )

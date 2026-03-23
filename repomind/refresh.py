@@ -9,6 +9,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from repomind.db import (
     CURRENT_SCHEMA_VERSION,
@@ -38,12 +39,23 @@ from repomind.walker import walk_repo
 # Constants
 # ---------------------------------------------------------------------------
 
-# Repos above this file count are indexed with a depth cap.
-_PARTIAL_FILE_THRESHOLD: int = 50_000
-# Maximum depth used when partial indexing kicks in.
-_PARTIAL_MAX_DEPTH: int = 3
 # Top-N files to store per directory as representative files.
 _REPRESENTATIVE_FILES_COUNT: int = 5
+
+
+def _file_limit() -> int:
+    """Return the maximum number of files to index (env: REPOMIND_FILE_LIMIT)."""
+    return int(os.environ.get("REPOMIND_FILE_LIMIT", "50000"))
+
+
+def _max_depth() -> int:
+    """Return the maximum directory depth to index (env: REPOMIND_MAX_DEPTH).
+
+    Depth is measured from the repo root (root-level files have depth 0).
+    Files below this depth are excluded from the index; if any are excluded the
+    index is marked partial.
+    """
+    return int(os.environ.get("REPOMIND_MAX_DEPTH", "8"))
 
 # ---------------------------------------------------------------------------
 # Directory role inference
@@ -99,7 +111,7 @@ class RefreshResult:
     files_indexed: int
     directories_indexed: int
     partial: bool
-    partial_reason: str | None
+    partial_reason: dict[str, Any] | None  # {"cap_type": str, "cap_value": int} | None
     branch_name: str | None
     head_sha: str | None
     indexed_at: str
@@ -164,7 +176,7 @@ def _write_repo_index(
     indexed_at: str,
     is_git: bool,
     partial: bool,
-    partial_reason: str | None,
+    partial_reason: dict[str, Any] | None,
 ) -> None:
     conn.execute(
         """
@@ -183,7 +195,7 @@ def _write_repo_index(
             1 if is_git else 0,
             CURRENT_SCHEMA_VERSION,
             1 if partial else 0,
-            partial_reason,
+            json.dumps(partial_reason) if partial_reason is not None else None,
         ),
     )
 
@@ -391,16 +403,30 @@ def refresh_index(repo_root: str) -> RefreshResult:
         # ------------------------------------------------------------------
         # Walk and classify
         # ------------------------------------------------------------------
-        raw_files = list(walk_repo(repo_root))
+        file_limit = _file_limit()
+        max_depth = _max_depth()
 
-        partial = len(raw_files) > _PARTIAL_FILE_THRESHOLD
-        if partial:
-            raw_files = [f for f in raw_files if f.depth <= _PARTIAL_MAX_DEPTH]
-            partial_reason = (
-                f"Repository exceeds {_PARTIAL_FILE_THRESHOLD} files; "
-                f"index capped at depth {_PARTIAL_MAX_DEPTH}."
-            )
+        all_files = list(walk_repo(repo_root))
+
+        # Apply depth cap first (always active; independent partial trigger).
+        depth_filtered = [f for f in all_files if f.depth <= max_depth]
+        depth_capped = len(depth_filtered) < len(all_files)
+
+        # Apply file count cap on the depth-filtered list.
+        if len(depth_filtered) > file_limit:
+            raw_files = depth_filtered[:file_limit]
+            partial = True
+            partial_reason: dict[str, Any] | None = {
+                "cap_type": "file_count",
+                "cap_value": file_limit,
+            }
+        elif depth_capped:
+            raw_files = depth_filtered
+            partial = True
+            partial_reason = {"cap_type": "depth", "cap_value": max_depth}
         else:
+            raw_files = depth_filtered
+            partial = False
             partial_reason = None
 
         classified = [classify_and_extract(f) for f in raw_files]

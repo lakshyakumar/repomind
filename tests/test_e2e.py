@@ -8,7 +8,7 @@ Separate sections cover:
   - Git repo happy path (multi-file, multi-directory)
   - Non-Git repo degradation
   - Stale-index detection and recovery
-  - Partial-index behavior (threshold monkeypatched to 3 files)
+  - Partial-index behavior (REPOMIND_FILE_LIMIT set to 3 files)
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from pathlib import Path
 
 import pytest
 
-import repomind.refresh as _refresh_module
 from repomind.queries import (
     get_critical_files,
     get_directory_map,
@@ -414,13 +413,13 @@ def test_e2e_plain_edit_suggestions_work(plain_repo: Path) -> None:
 
 @pytest.fixture()
 def partial_repo(tmp_path: Path, storage: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Small repo that triggers partial indexing via a lowered threshold."""
-    monkeypatch.setattr(_refresh_module, "_PARTIAL_FILE_THRESHOLD", 3)
+    """Small repo that triggers partial indexing via a lowered file limit."""
+    monkeypatch.setenv("REPOMIND_FILE_LIMIT", "3")
 
     r = tmp_path / "partial"
     r.mkdir()
     _init_git(r)
-    # More than 3 files so the partial threshold fires.
+    # More than 3 files so the file-count cap fires.
     for i in range(6):
         (r / f"module_{i}.py").write_text(f"# Module {i}\nx = {i}\n" * 5)
     _commit_all(r, "init")

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
+from typing import Any
 
 from repomind.db import get_db_path, open_db
 from repomind.extractor import _tokenize as _tokenize_text
@@ -30,8 +31,9 @@ def _build_provenance(
     current_head_sha: str | None,
     stale: bool,
     partial: bool,
+    partial_reason: dict[str, Any] | None = None,
 ) -> dict:
-    return {
+    prov: dict[str, Any] = {
         "repo_root": repo_root,
         "indexed_branch": indexed_branch,
         "indexed_head_sha": indexed_head_sha,
@@ -41,6 +43,9 @@ def _build_provenance(
         "stale": stale,
         "partial": partial,
     }
+    if partial and partial_reason is not None:
+        prov["partial_reason"] = partial_reason
+    return prov
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +176,17 @@ def get_index_status(repo_root: str) -> IndexStatus:
     indexed_at = row["indexed_at"]
     partial = bool(row["partial_index"])
 
+    # Deserialize partial_reason JSON if present.
+    _raw_reason = row["partial_reason"]
+    partial_reason: dict[str, Any] | None
+    if _raw_reason is not None:
+        try:
+            partial_reason = json.loads(_raw_reason)
+        except (json.JSONDecodeError, TypeError):
+            partial_reason = None
+    else:
+        partial_reason = None
+
     # Staleness is only meaningful for Git repos.
     if git:
         stale = (current_branch != indexed_branch) or (current_head != indexed_head)
@@ -188,6 +204,7 @@ def get_index_status(repo_root: str) -> IndexStatus:
         current_head_sha=current_head,
         stale=stale,
         partial=partial,
+        partial_reason=partial_reason,
     )
 
     return IndexStatus(
@@ -220,7 +237,7 @@ class RefreshIndexResult:
     files_indexed: int
     directories_indexed: int
     partial: bool
-    partial_reason: str | None
+    partial_reason: dict[str, Any] | None  # {"cap_type": str, "cap_value": int} | None
     error_message: str | None
     provenance: dict = field(default_factory=dict)
 

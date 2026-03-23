@@ -305,10 +305,10 @@ def test_reason_not_empty_for_matching_file(webhook_repo: Path) -> None:
 
 
 def test_path_token_match_in_reason(webhook_repo: Path) -> None:
-    """When path tokens fire, the reason should mention path tokens."""
+    """When path tokens fire, the reason should mention path match."""
     result = get_edit_suggestions(str(webhook_repo), "delivery webhooks")
     top = result.suggestions[0]
-    assert any("Path tokens matched" in r for r in top["reason"])
+    assert any("Path match" in r for r in top["reason"])
 
 
 # ---------------------------------------------------------------------------

@@ -332,6 +332,58 @@ _STOP_TOKENS: frozenset[str] = frozenset(
 
 _MIN_TOKEN_LEN: int = 2
 
+# Import tokens that carry no domain signal and must be filtered out.
+# Applied on top of _STOP_TOKENS and _MIN_TOKEN_LEN when extracting import tokens.
+# Covers the Python standard library modules most commonly imported in any codebase.
+# This list is intentionally fixed for Iteration 2; stdlib detection is not attempted.
+_IMPORT_STOP_TOKENS: frozenset[str] = frozenset(
+    {
+        "os",
+        "sys",
+        "re",
+        "io",
+        "abc",
+        "typing",
+        "types",
+        "collections",
+        "functools",
+        "itertools",
+        "contextlib",
+        "dataclasses",
+        "pathlib",
+        "logging",
+        "warnings",
+        "string",
+        "enum",
+        "datetime",
+        "threading",
+        "asyncio",
+        "inspect",
+        "traceback",
+        "struct",
+        "hashlib",
+        "base64",
+        "uuid",
+        "http",
+        "urllib",
+        "socket",
+        "json",
+        "math",
+        "time",
+        "copy",
+        "random",
+        "subprocess",
+    }
+)
+
+# Regex patterns for Python import statements (single-line only in Iteration 2).
+_IMPORT_FROM_RE: re.Pattern[str] = re.compile(
+    r"^from\s+([\w.]+)\s+import\s+(.+)$"
+)
+_IMPORT_MODULE_RE: re.Pattern[str] = re.compile(
+    r"^import\s+([\w.,\s]+)"
+)
+
 # How many lines to scan for header comments.
 _HEADER_SCAN_LINES: int = 25
 # Maximum header tokens to return.
@@ -554,6 +606,66 @@ def extract_header_tokens(abs_path: str, extension: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Public: import token extraction
+# ---------------------------------------------------------------------------
+
+
+def extract_import_tokens(abs_path: str, extension: str) -> list[str]:
+    """Return unique, filtered tokens extracted from Python import statements.
+
+    Only ``.py`` files are processed; all other extensions return ``[]``.
+
+    Handles single-line ``from X.Y.Z import a, b, c`` and ``import X.Y.Z``
+    statements.  Parenthesised multi-line imports are partially handled: the
+    module path on the opening line is captured, but continuation lines are
+    not parsed (Iteration 2 scope).
+
+    Tokenization pipeline:
+    1. Concatenate module path segments and imported names into a single text.
+    2. Run through ``_tokenize`` (applies ``_SPLIT_RE``, ``_STOP_TOKENS``,
+       ``_MIN_TOKEN_LEN``).
+    3. Filter out ``_IMPORT_STOP_TOKENS``.
+    """
+    if extension.lower() != ".py":
+        return []
+
+    try:
+        with open(abs_path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return []
+
+    import_texts: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+
+        m = _IMPORT_FROM_RE.match(stripped)
+        if m:
+            module_path = m.group(1).replace(".", " ")
+            targets = (
+                m.group(2)
+                .replace(",", " ")
+                .replace("(", " ")
+                .replace(")", " ")
+                .replace("\\", " ")
+            )
+            import_texts.append(module_path + " " + targets)
+            continue
+
+        m = _IMPORT_MODULE_RE.match(stripped)
+        if m:
+            modules = m.group(1).replace(".", " ").replace(",", " ")
+            import_texts.append(modules)
+
+    if not import_texts:
+        return []
+
+    raw_tokens = _tokenize(" ".join(import_texts))
+    return [t for t in raw_tokens if t not in _IMPORT_STOP_TOKENS]
+
+
+# ---------------------------------------------------------------------------
 # Public: combined entry point
 # ---------------------------------------------------------------------------
 
@@ -572,6 +684,7 @@ def classify_and_extract(record: FileRecord) -> ClassifiedFile:
     file_type = classify_file(record)
     path_tokens = extract_path_tokens(record.path)
     header_tokens = extract_header_tokens(record.abs_path, ext)
+    import_tokens = extract_import_tokens(record.abs_path, ext)
     line_count = None if record.is_noisy else _count_lines(record.abs_path)
 
     return ClassifiedFile(
@@ -582,4 +695,5 @@ def classify_and_extract(record: FileRecord) -> ClassifiedFile:
         directory_path=directory_path,
         path_tokens=path_tokens,
         header_tokens=header_tokens,
+        import_tokens=import_tokens,
     )

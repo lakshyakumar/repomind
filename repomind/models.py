@@ -56,3 +56,7 @@ class ClassifiedFile(FileRecord):
     # Unique lowercase tokens extracted from leading comment/docstring lines.
     # Stored as JSON in the DB column header_tokens_json.
     header_tokens: list[str] = field(default_factory=list)
+    # Unique lowercase tokens extracted from import statements (Python only for I2).
+    # Stop-filtered by both _STOP_TOKENS and _IMPORT_STOP_TOKENS.
+    # Stored as JSON in the DB column import_tokens_json.
+    import_tokens: list[str] = field(default_factory=list)

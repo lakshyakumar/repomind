@@ -208,6 +208,7 @@ def _write_files(
             ref_counts.get(cf.path, 0),
             json.dumps(cf.path_tokens),
             json.dumps(cf.header_tokens),
+            json.dumps(cf.import_tokens),
             None,  # representative_reason — derived at query time in T13
             cf.last_modified_ts,
         )
@@ -218,8 +219,8 @@ def _write_files(
         INSERT OR REPLACE INTO files
           (repo_id, path, directory_path, extension, size_bytes, line_count, depth,
            file_type, importance_score, inbound_ref_count, path_tokens_json,
-           header_tokens_json, representative_reason, last_modified_ts)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           header_tokens_json, import_tokens_json, representative_reason, last_modified_ts)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         rows,
     )

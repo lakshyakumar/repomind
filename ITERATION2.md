@@ -30,6 +30,7 @@ Improve candidate retrieval so it handles more real task phrasing and is less fr
 
 ### 2. Richer cheap signals for ranking
 Add import-line token extraction where it is cheap and deterministic, so ranking can use more than path and header tokens.
+Python is the first-class target. JS/TS is in scope only if the Python implementation is clean and the regex pattern is directly reusable. Otherwise JS/TS moves to Iteration 3.
 
 ### 3. Better large-repo ergonomics
 Add configurable index limits and more explicit partial-index reporting.
@@ -56,9 +57,9 @@ Iteration 2 must not include:
 
 ## Technical Priorities
 
-1. SQLite FTS5-backed retrieval for `get_edit_suggestions`
-2. Import-line token extraction (Python first, JS/TS if easy)
-3. Ranking and explanation improvements for edit suggestions
+1. SQLite FTS5-backed retrieval for `get_edit_suggestions` (design decision required before implementation — see I2-T1)
+2. Import-line token extraction (Python; JS/TS conditional on clean reuse — see I2-T2)
+3. Ranking formula update incorporating import tokens (I2-T4a), then reason/empty_reason improvements (I2-T4b) — separate PRs
 4. Configurable file/depth caps and structured partial-index reporting
 5. Richer `get_index_status` trust signals
 6. End-to-end coverage for all new behavior

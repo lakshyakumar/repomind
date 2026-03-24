@@ -8,13 +8,28 @@ It indexes the currently checked-out state of a Git repository, records branch a
 
 | Tool | Purpose |
 |---|---|
-| `get_index_status` | Check index freshness. **Call this first.** |
+| `get_index_status` | Check index freshness, file count, age, and quality signal. **Call this first.** |
 | `refresh_index` | Rebuild the index for the current branch and HEAD |
 | `get_repo_overview` | Stack hints, top directories, critical files |
 | `get_directory_map` | Ranked directory tree with roles and representative files |
 | `get_critical_files` | Files ranked by importance score |
 | `get_recent_changes` | Recent commits and changed files |
-| `get_edit_suggestions` | Ranked file suggestions for a task description |
+| `get_edit_suggestions` | Ranked file suggestions for a task description (FTS + import-token scoring) |
+
+### `get_index_status`
+
+Returns freshness state plus three trust signals:
+- `quality_signal`: `"full"` (complete index) / `"partial"` (capped) / `"degraded"` (no index)
+- `age_seconds`: seconds since the index was written (`null` if no index)
+- `indexed_file_count`: files currently in the index (`null` if no index)
+
+### `get_edit_suggestions`
+
+Uses FTS5 prefix matching as the primary retrieval path so partial task tokens (e.g. `"webhook"`) surface files with related names (e.g. `"webhooks/handler.py"`). Falls back to a full table scan if FTS returns nothing.
+
+Scoring incorporates four signals: path token overlap, directory token overlap, header token overlap, and import token overlap (Python files). Named weights: path 0.45, directory 0.25, header 0.15, imports 0.15.
+
+When the result is empty, `empty_reason` explains why: `"stop_words_only"` or `"no_token_overlap"`.
 
 ## Local setup (venv)
 
@@ -123,13 +138,17 @@ To configure Claude Desktop to use the Docker image:
 | `make docker-build` | Build Docker image |
 | `make clean` | Remove build artifacts |
 
-## Storage
+## Storage and configuration
 
-Repomind stores its index at `~/.repomind/` by default. Override with:
+Repomind stores its index at `~/.repomind/` by default.
 
-```bash
-export REPOMIND_STORAGE_ROOT=/custom/path
-```
+| Environment variable | Default | Description |
+|---|---|---|
+| `REPOMIND_STORAGE_ROOT` | `~/.repomind` | Root directory for all index files |
+| `REPOMIND_FILE_LIMIT` | `50000` | Maximum files indexed per refresh. Repos exceeding this are marked partial (`quality_signal: "partial"`). |
+| `REPOMIND_MAX_DEPTH` | `8` | Maximum directory depth indexed. Files deeper than this are excluded; if any are excluded the index is marked partial. |
+
+Set any of these before starting the server or running a refresh:
 
 ## Why this is useful for agents
 
@@ -169,21 +188,3 @@ A good outcome is:
 - [Architecture](./ARCHITECTURE.md)
 
 
-## Docker setup
-
-Build the image:
-
-```bash
-docker build -t repomind:latest .
-```
-
-Run it as an MCP stdio server with your repo mounted in:
-
-```bash
-docker run --rm -i   -v /absolute/path/to/your/repo:/repo   -v "$HOME/.repomind:/root/.repomind"   repomind:latest
-```
-
-Notes:
-- replace `/absolute/path/to/your/repo` with the real repo path you want the MCP client to point at
-- the `~/.repomind` mount keeps the local index/cache persistent between runs
-- this is an stdio MCP server, so it will sit quietly until a client connects

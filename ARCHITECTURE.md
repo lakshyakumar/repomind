@@ -59,7 +59,20 @@ Default local storage root:
 
 Where `repo_hash` is a stable hash of the normalized absolute repository root path.
 
+## 5.1. Configuration (Environment Variables)
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `REPOMIND_STORAGE_ROOT` | `~/.repomind` | Root directory for all index files |
+| `REPOMIND_FILE_LIMIT` | `50000` | Maximum files to index per refresh |
+| `REPOMIND_MAX_DEPTH` | `8` | Maximum directory depth to index |
+
+All three are read at runtime; no restart required.
+
 ## 6. SQLite Schema
+
+Current schema version: **4** (`CURRENT_SCHEMA_VERSION` in `repomind/db.py`).
+`open_db()` drops and recreates all tables when the stored version differs.
 
 ```sql
 CREATE TABLE repo_index (
@@ -68,11 +81,12 @@ CREATE TABLE repo_index (
   repo_name TEXT NOT NULL,
   branch_name TEXT,
   head_sha TEXT,
-  indexed_at TEXT NOT NULL,
+  indexed_at TEXT NOT NULL,       -- UTC ISO-8601 string
   is_git_repo INTEGER NOT NULL,
   index_version INTEGER NOT NULL,
   partial_index INTEGER NOT NULL DEFAULT 0,
-  partial_reason TEXT
+  partial_reason TEXT             -- JSON: {"cap_type": "file_count"|"depth", "cap_value": N}
+                                  -- NULL when partial_index = 0
 );
 
 CREATE TABLE directories (
@@ -102,6 +116,7 @@ CREATE TABLE files (
   inbound_ref_count INTEGER NOT NULL DEFAULT 0,
   path_tokens_json TEXT NOT NULL,
   header_tokens_json TEXT NOT NULL,
+  import_tokens_json TEXT NOT NULL DEFAULT '[]',  -- Python import tokens (I2-T2)
   representative_reason TEXT,
   last_modified_ts TEXT,
   UNIQUE(repo_id, path)
@@ -148,6 +163,24 @@ CREATE INDEX idx_files_repo_directory ON files(repo_id, directory_path);
 CREATE INDEX idx_commits_repo_time ON recent_commits(repo_id, authored_at DESC);
 CREATE INDEX idx_commit_files_repo_path ON commit_files(repo_id, path);
 ```
+
+### FTS5 virtual table
+
+A standalone FTS5 virtual table `files_fts` is built during each `refresh_index` run:
+
+```sql
+CREATE VIRTUAL TABLE files_fts USING fts5(
+    path,
+    directory_path,
+    header_tokens,     -- space-joined tokens from header_tokens_json
+    tokenize = 'unicode61'
+);
+```
+
+- `files_fts` is **not** in the DDL above; it only exists after a successful refresh.
+- `rowid` in `files_fts` matches `files.id`, enabling `JOIN`-style lookups.
+- Prefix queries (`token*`) allow `"webhook"` to surface files containing `"webhooks"`.
+- The table is dropped and rebuilt on every refresh.
 
 ## 7. File Classification Model
 
@@ -253,44 +286,94 @@ This score is stored in `directories.importance_score`.
 
 ## 10. Edit Suggestion Heuristics
 
-`get_edit_suggestions` is the most product-critical tool in v1 and must remain deterministic.
+`get_edit_suggestions` is the most product-critical tool. It must remain deterministic.
 
 ### Inputs
 - natural-language task string
 - optional result limit
 
+### Candidate retrieval (I2-T3)
+
+1. **FTS primary path**: tokenize the task and build a prefix-match FTS5 query
+   (`token*` for each task token). Query `files_fts`; join results back to `files`
+   via `rowid`. Set `retrieval_method = "fts"`.
+2. **Fallback**: if FTS returns no candidates (or `files_fts` is absent), fall back to
+   a full table scan of `files`. Set `retrieval_method = "fallback"`.
+
+FTS prefix matching allows task token `"webhook"` to surface files containing `"webhooks"`.
+
 ### Candidate signals
-For each indexed file, compute relevance using:
+
+For each candidate file, compute relevance using:
+
 1. tokenized file path match
 2. directory name match
-3. file type match
-4. extracted header comment token match where available
-5. file importance score
+3. extracted header comment token match
+4. extracted import token match (Python files only; I2-T2)
+5. file importance score (indirect, via `_W_IMPORTANCE`)
 
-### Scoring
-- tokenize the task into lowercase unique tokens
-- tokenize file path, directory path, and header tokens the same way
-- `path_overlap = |task_tokens ∩ path_tokens| / |task_tokens|`
-- `dir_overlap = |task_tokens ∩ directory_tokens| / |task_tokens|`
-- `header_overlap = |task_tokens ∩ header_tokens| / |task_tokens|`
-- `relevance_score = 0.5 * path_overlap + 0.3 * dir_overlap + 0.2 * header_overlap`
-- exclude files where `relevance_score == 0`
-- normalize `importance_score` to a `0..1` range with `normalized_importance = min(1.0, importance_score / 1.5)`
-- `final_score = 0.7 * relevance_score + 0.3 * normalized_importance`
+### Scoring weights (named constants in `repomind/queries.py`)
+
+```
+_W_PATH      = 0.45   # weight of path token overlap
+_W_DIR       = 0.25   # weight of directory token overlap
+_W_HEADER    = 0.15   # weight of header token overlap
+_W_IMPORT    = 0.15   # weight of import token overlap
+
+_W_RELEVANCE = 0.70   # weight of relevance_score in final score
+_W_IMPORTANCE = 0.30  # weight of normalized importance_score in final score
+```
+
+### Scoring formula
+
+```
+path_overlap   = |task_tokens ∩ path_tokens|   / |task_tokens|
+dir_overlap    = |task_tokens ∩ dir_tokens|    / |task_tokens|
+header_overlap = |task_tokens ∩ header_tokens| / |task_tokens|
+import_overlap = |task_tokens ∩ import_tokens| / |task_tokens|
+
+relevance_score = _W_PATH * path_overlap
+                + _W_DIR  * dir_overlap
+                + _W_HEADER * header_overlap
+                + _W_IMPORT * import_overlap
+
+normalized_importance = min(1.0, importance_score / 1.5)
+
+final_score = _W_RELEVANCE * relevance_score + _W_IMPORTANCE * normalized_importance
+```
+
+Files where `relevance_score == 0` are excluded before the final sort.
+
+### Import token extraction (`_IMPORT_STOP_TOKENS`, I2-T2)
+
+For Python files, import statements are parsed and tokenized into module path segments
+and imported names. A named constant `_IMPORT_STOP_TOKENS: frozenset[str]` (32 entries)
+filters out common stdlib module names (`os`, `sys`, `re`, `json`, etc.) that carry no
+task-specific signal. Tokens are also subject to the same `_STOP_TOKENS` and
+`_MIN_TOKEN_LEN` rules as other token columns.
 
 ### Output behavior
 - return top 10 results by default
-- each result must include:
+- each result includes:
   - `path`
   - `file_type`
   - `score`
-  - `reason[]`
-  - `confidence`
-- confidence is conservative in v1 and should default to `low` unless multiple signals align strongly
+  - `reason[]` — strings identifying which signals fired:
+    - `"Path match (fts): <tokens>"` when `retrieval_method == "fts"`
+    - `"Path match (exact): <tokens>"` when `retrieval_method == "fallback"`
+    - `"Directory token matched: <tokens>"`
+    - `"Header tokens matched: <tokens>"`
+    - `"Import match: <tokens>"`
+    - `"High file importance score"`
+  - `confidence` — `"high"` / `"medium"` / `"low"` based on signal breadth and score
+- `retrieval_method` — `"fts"` or `"fallback"` (observability field)
+- `empty_reason` — non-`null` only when `suggestions` is empty:
+  - `"stop_words_only"` — task reduced to empty token set after filtering
+  - `"no_token_overlap"` — tokens present but nothing matched
 
 ## 11. MCP Tool Contracts
 
-All tool responses must include a provenance block:
+All tool responses include a provenance block. Fields always present:
 
 ```json
 {
@@ -302,10 +385,25 @@ All tool responses must include a provenance block:
     "current_branch": "main",
     "current_head_sha": "abc123",
     "stale": false,
-    "partial": false
+    "partial": false,
+    "quality_signal": "full"
   }
 }
 ```
+
+When `partial` is `true`, `partial_reason` is also included:
+
+```json
+{
+  "provenance": {
+    "partial": true,
+    "partial_reason": {"cap_type": "file_count", "cap_value": 50000},
+    "quality_signal": "partial"
+  }
+}
+```
+
+`quality_signal` values: `"full"` (complete index), `"partial"` (capped index), `"degraded"` (no index).
 
 ### `get_repo_overview`
 ```json
@@ -379,9 +477,14 @@ All tool responses must include a provenance block:
   "refresh_recommended": true,
   "recommended_first_call": "refresh_index",
   "partial": false,
+  "age_seconds": 3742.1,
+  "indexed_file_count": 412,
+  "quality_signal": "full",
   "provenance": {}
 }
 ```
+
+`age_seconds` is `null` when no index exists. `quality_signal` reflects completeness, not freshness; a `"full"` index can still be stale.
 
 ### `get_edit_suggestions`
 ```json
@@ -392,17 +495,22 @@ All tool responses must include a provenance block:
       "path": "src/webhooks/github.py",
       "file_type": "source",
       "score": 0.82,
-      "confidence": "low",
+      "confidence": "medium",
       "reason": [
-        "Path tokens matched: webhook, github",
+        "Path match (fts): webhook, github",
         "Directory token matched: webhooks",
+        "Import match: retry",
         "High file importance score"
       ]
     }
   ],
+  "retrieval_method": "fts",
+  "empty_reason": null,
   "provenance": {}
 }
 ```
+
+When `suggestions` is empty, `empty_reason` explains why: `"stop_words_only"` or `"no_token_overlap"`.
 
 ### `refresh_index`
 ```json
@@ -502,9 +610,24 @@ Do not partially update the live DB in place during refresh.
 ## 15. Performance Rules
 
 - first index build must complete in under 30 seconds for repositories up to 10,000 files
-- repositories over 50,000 files must produce a partial index capped at depth 3
-- when partial indexing occurs, all tool responses must include `partial: true`
+- when partial indexing occurs, all tool responses must include `partial: true` and `quality_signal: "partial"` in provenance
 - branch and HEAD checks on each query must remain lightweight
+
+### Partial-index caps (I2-T5)
+
+Two independent caps, each configurable via environment variable:
+
+| Env var | Default | Description |
+|---------|---------|-------------|
+| `REPOMIND_FILE_LIMIT` | `50000` | Max files to index. If the depth-filtered file list exceeds this, the list is truncated. Sets `partial_reason.cap_type = "file_count"`. |
+| `REPOMIND_MAX_DEPTH` | `8` | Max directory depth. Files at depth > this value are excluded from the walk. Sets `partial_reason.cap_type = "depth"`. |
+
+Both caps are applied on every refresh. The depth cap runs first. If both fire, `file_count` is the recorded reason.
+
+`partial_reason` is stored as a JSON object in the `repo_index.partial_reason` TEXT column:
+```json
+{"cap_type": "file_count", "cap_value": 50000}
+```
 
 ## 16. Failure and Degradation Model
 
@@ -524,8 +647,9 @@ Repomind should not pretend to have:
 
 ### Partial index
 - partial indexes remain queryable
-- responses must include `partial: true`
-- large-repo depth caps must be visible in status or provenance metadata
+- responses must include `partial: true` in provenance
+- `quality_signal: "partial"` distinguishes a capped index from a complete one
+- `partial_reason` in provenance identifies which cap fired and at what value
 
 ## 17. Implementation Notes
 
